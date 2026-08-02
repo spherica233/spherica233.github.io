@@ -1,0 +1,887 @@
+<!DOCTYPE html><html lang="zh-CN" data-theme="light"><head><meta charset="UTF-8"><meta http-equiv="X-UA-Compatible" content="IE=edge"><meta name="viewport" content="width=device-width, initial-scale=1.0,viewport-fit=cover"><title>进程注入 | 我的博客</title><meta name="author" content="spherica233"><meta name="copyright" content="spherica233"><meta name="format-detection" content="telephone=no"><meta name="theme-color" content="#ffffff"><meta name="description" content="进程注入WindowsHook注入我的错误理解： 设置钩子 → 等键盘消息触发hook → 这时系统才加载 DLL → 然后恶意代码执行 实际的顺序： 1234567891011121314151617181920212223242526flowchart TD    Start([&quot;🧑‍💻 攻击者进程&lt;br&#x2F;&gt;(launcher.exe)&quot;]) --&gt;">
+<meta property="og:type" content="article">
+<meta property="og:title" content="进程注入">
+<meta property="og:url" content="https://spherica233.github.io/2026/07/22/%E8%BF%9B%E7%A8%8B%E6%B3%A8%E5%85%A5/index.html">
+<meta property="og:site_name" content="我的博客">
+<meta property="og:description" content="进程注入WindowsHook注入我的错误理解： 设置钩子 → 等键盘消息触发hook → 这时系统才加载 DLL → 然后恶意代码执行 实际的顺序： 1234567891011121314151617181920212223242526flowchart TD    Start([&quot;🧑‍💻 攻击者进程&lt;br&#x2F;&gt;(launcher.exe)&quot;]) --&gt;">
+<meta property="og:locale" content="zh_CN">
+<meta property="og:image" content="https://spherica233.github.io/img/avatar.png">
+<meta property="article:published_time" content="2026-07-21T16:00:00.000Z">
+<meta property="article:modified_time" content="2026-08-02T04:46:18.340Z">
+<meta property="article:author" content="spherica233">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:image" content="https://spherica233.github.io/img/avatar.png"><script type="application/ld+json">{
+  "@context": "https://schema.org",
+  "@type": "BlogPosting",
+  "headline": "进程注入",
+  "url": "https://spherica233.github.io/2026/07/22/%E8%BF%9B%E7%A8%8B%E6%B3%A8%E5%85%A5/",
+  "image": "https://spherica233.github.io/img/avatar.png",
+  "datePublished": "2026-07-21T16:00:00.000Z",
+  "dateModified": "2026-08-02T04:46:18.340Z",
+  "author": [
+    {
+      "@type": "Person",
+      "name": "spherica233",
+      "url": "https://spherica233.github.io"
+    }
+  ]
+}</script><link rel="shortcut icon" href="/img/favicon.png"><link rel="canonical" href="https://spherica233.github.io/2026/07/22/%E8%BF%9B%E7%A8%8B%E6%B3%A8%E5%85%A5/index.html"><link rel="preconnect" href="//cdn.jsdelivr.net"/><link rel="preconnect" href="//busuanzi.ibruce.info"/><link rel="stylesheet" href="/css/index.css?v=5.6.1"><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@7.3.1/css/all.min.css"><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fancyapps/ui@6.1.14/dist/fancybox/fancybox.min.css" media="print" onload="this.media='all'"><script>
+    (() => {
+      
+    const saveToLocal = {
+      set: (key, value, ttl) => {
+        const data = { value }
+
+        if (ttl != null) {
+          data.expiry = Date.now() + ttl * 86400000
+        }
+
+        localStorage.setItem(key, JSON.stringify(data))
+      },
+      get: key => {
+        const itemStr = localStorage.getItem(key)
+        if (!itemStr) return
+
+        try {
+          const data = JSON.parse(itemStr)
+
+          if (data.expiry && Date.now() > data.expiry) {
+            localStorage.removeItem(key)
+            return
+          }
+
+          return data.value
+        } catch {
+          localStorage.removeItem(key)
+        }
+      }
+    }
+
+    const scriptCache = new Map()
+    const cssCache = new Map()
+    window.btf = {
+      saveToLocal,
+      getScript: (url, attr = {}) => {
+        if (scriptCache.has(url)) {
+          return scriptCache.get(url)
+        }
+
+        const promise = new Promise((resolve, reject) => {
+          const script = document.createElement('script')
+
+          script.src = url
+          script.async = true
+
+          for (const key in attr) {
+            script.setAttribute(key, attr[key])
+          }
+
+          script.onload = resolve
+          script.onerror = reject
+
+          document.head.appendChild(script)
+        })
+
+        scriptCache.set(url, promise)
+
+        return promise
+      },
+      getCSS: (url, id) => {
+        if (cssCache.has(url)) {
+          return cssCache.get(url)
+        }
+
+        const promise = new Promise((resolve, reject) => {
+          const link = document.createElement('link')
+
+          link.rel = 'stylesheet'
+          link.href = url
+
+          if (id) {
+            link.id = id
+          }
+
+          link.onload = resolve
+          link.onerror = reject
+
+          document.head.appendChild(link)
+        })
+
+        cssCache.set(url, promise)
+
+        return promise
+      },
+      addGlobalFn: (key, fn, name = false, parent = window) => {
+        if (!false && key.startsWith('pjax')) return
+        const globalFn = parent.globalFn || {}
+        globalFn[key] = globalFn[key] || {}
+        globalFn[key][name || Object.keys(globalFn[key]).length] = fn
+        parent.globalFn = globalFn
+      }
+    }
+  
+      
+      const metaThemeColor = document.querySelector('meta[name="theme-color"]')
+      const activateDarkMode = () => {
+        document.documentElement.dataset.theme = 'dark'
+        if (metaThemeColor !== null) {
+          metaThemeColor.setAttribute('content', '#0d0d0d')
+        }
+      }
+      const activateLightMode = () => {
+        document.documentElement.dataset.theme = 'light'
+        if (metaThemeColor !== null) {
+          metaThemeColor.setAttribute('content', '#ffffff')
+        }
+      }
+
+      btf.activateDarkMode = activateDarkMode
+      btf.activateLightMode = activateLightMode
+
+      const theme = saveToLocal.get('theme')
+    
+          theme === 'dark' ? activateDarkMode() : theme === 'light' ? activateLightMode() : null
+        
+      
+      const asideStatus = saveToLocal.get('aside-status')
+      if (asideStatus !== undefined) {
+        document.documentElement.classList.toggle('hide-aside', asideStatus === 'hide')
+      }
+    
+      
+    const detectApple = () => {
+      if (/iPad|iPhone|iPod|Macintosh/.test(navigator.userAgent)) {
+        document.documentElement.classList.add('apple')
+      }
+    }
+    detectApple()
+  
+    })()
+  </script><script>const GLOBAL_CONFIG = {
+  root: '/',
+  algolia: undefined,
+  localSearch: {"path":"/search.xml","preload":false,"top_n_per_article":1,"unescape":false,"pagination":{"enable":false,"hitsPerPage":8},"languages":{"hits_empty":"未找到符合您查询的内容：${query}","hits_stats":"共找到 ${hits} 篇文章"}},
+  translate: undefined,
+  highlight: {"plugin":"highlight.js","highlightCopy":true,"highlightLang":true,"highlightHeightLimit":false,"highlightFullpage":false,"highlightMacStyle":false},
+  copy: {
+    success: '复制成功',
+    error: '复制失败',
+    noSupport: '浏览器不支持'
+  },
+  relativeDate: {
+    homepage: false,
+    post: false
+  },
+  runtime: '天',
+  dateSuffix: {
+    just: '刚刚',
+    min: '分钟前',
+    hour: '小时前',
+    day: '天前',
+    month: '个月前'
+  },
+  copyright: undefined,
+  lightbox: 'fancybox',
+  Snackbar: undefined,
+  infinitegrid: {
+    js: 'https://cdn.jsdelivr.net/npm/@egjs/infinitegrid@4.13.0/dist/infinitegrid.min.js',
+    buttonText: '加载更多'
+  },
+  isPhotoFigcaption: false,
+  islazyloadPlugin: false,
+  isAnchor: false,
+  percent: {
+    toc: true,
+    rightside: false,
+  },
+  autoDarkmode: false
+}</script><script id="config-diff">var GLOBAL_CONFIG_SITE = {
+  title: '进程注入',
+  isHighlightShrink: false,
+  isToc: true,
+  pageType: 'post'
+}</script><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/live2d-widget@3.1.4/autoload.css"><meta name="generator" content="Hexo 8.1.2"></head><body><div id="sidebar"><div id="menu-mask"></div><div id="sidebar-menus"><div class="avatar-img text-center"><img src="/img/avatar.png" onerror="this.onerror=null;this.src='/img/friend_404.gif'" alt="avatar"/></div><div class="site-data text-center"><a href="/archives/"><div class="headline">文章</div><div class="length-num">2</div></a><a href="/tags/"><div class="headline">标签</div><div class="length-num">0</div></a><a href="/categories/"><div class="headline">分类</div><div class="length-num">2</div></a></div><div class="menus_items"><div class="menus_item"><a class="site-page" href="/"><i class="fa-fw fas fa-home"></i><span> 首页</span></a></div><div class="menus_item"><a class="site-page" href="/about/"><i class="fa-fw fas fa-heartbeat"></i><span> 关于</span></a></div><div class="menus_item"><a class="site-page" href="/archives/"><i class="fa-fw fas fa-history"></i><span> 时间轴</span></a></div><div class="menus_item"><a class="site-page" href="/tags/"><i class="fa-fw fas fa-tags"></i><span> 标签</span></a></div><div class="menus_item"><a class="site-page" href="/categories/"><i class="fa-fw fas fa-bars"></i><span> 分类</span></a></div><div class="menus_item"><a class="site-page" href="/friends/"><i class="fa-fw fas fa-link"></i><span> 友链</span></a></div></div></div></div><div class="post" id="body-wrap"><header class="post-bg" id="page-header"><nav id="nav"><span id="blog-info"><a class="nav-site-title" href="/"><span class="site-name">我的博客</span></a><a class="nav-page-title" href="/"><span class="site-name">进程注入</span><span class="site-name"><i class="fa-solid fa-circle-arrow-left"></i><span>  返回首页</span></span></a></span><div id="menus"><div id="search-button"><span class="site-page social-icon search"><i class="fas fa-search fa-fw"></i><span> 搜索</span></span></div><div class="menus_items"><div class="menus_item"><a class="site-page" href="/"><i class="fa-fw fas fa-home"></i><span> 首页</span></a></div><div class="menus_item"><a class="site-page" href="/about/"><i class="fa-fw fas fa-heartbeat"></i><span> 关于</span></a></div><div class="menus_item"><a class="site-page" href="/archives/"><i class="fa-fw fas fa-history"></i><span> 时间轴</span></a></div><div class="menus_item"><a class="site-page" href="/tags/"><i class="fa-fw fas fa-tags"></i><span> 标签</span></a></div><div class="menus_item"><a class="site-page" href="/categories/"><i class="fa-fw fas fa-bars"></i><span> 分类</span></a></div><div class="menus_item"><a class="site-page" href="/friends/"><i class="fa-fw fas fa-link"></i><span> 友链</span></a></div></div><div id="toggle-menu"><span class="site-page"><i class="fas fa-bars fa-fw"></i></span></div></div></nav><div id="post-info"><h1 class="post-title">进程注入</h1><div id="post-meta"><div class="meta-firstline"><span class="post-meta-date"><i class="far fa-calendar-alt fa-fw post-meta-icon"></i><span class="post-meta-label">发表于</span><time class="post-meta-date-created" datetime="2026-07-21T16:00:00.000Z" title="发表于 2026-07-22 00:00:00">2026-07-22</time><span class="post-meta-separator">|</span><i class="fas fa-history fa-fw post-meta-icon"></i><span class="post-meta-label">更新于</span><time class="post-meta-date-updated" datetime="2026-08-02T04:46:18.340Z" title="更新于 2026-08-02 12:46:18">2026-08-02</time></span><span class="post-meta-categories"><span class="post-meta-separator">|</span><i class="fas fa-inbox fa-fw post-meta-icon"></i><a class="post-meta-categories" href="/categories/Windows/">Windows</a><i class="fas fa-angle-right post-meta-separator"></i><i class="fas fa-inbox fa-fw post-meta-icon"></i><a class="post-meta-categories" href="/categories/Windows/%E5%85%8D%E6%9D%80/">免杀</a></span></div><div class="meta-secondline"><span class="post-meta-separator">|</span><span class="post-meta-wordcount"><i class="far fa-file-word fa-fw post-meta-icon"></i><span class="post-meta-label">总字数:</span><span class="word-count">3.7k</span><span class="post-meta-separator">|</span><i class="far fa-clock fa-fw post-meta-icon"></i><span class="post-meta-label">阅读时长:</span><span>13分钟</span></span><span class="post-meta-separator">|</span><span class="post-meta-pv-cv" id="" data-flag-title=""><i class="far fa-eye fa-fw post-meta-icon"></i><span class="post-meta-label">浏览量:</span><span id="busuanzi_value_page_pv"><i class="fa-solid fa-spinner fa-spin"></i></span></span></div></div></div></header><main class="layout" id="content-inner"><div id="post"><article class="container post-content" id="article-container"><h1 id="进程注入"><a href="#进程注入" class="headerlink" title="进程注入"></a>进程注入</h1><h2 id="WindowsHook注入"><a href="#WindowsHook注入" class="headerlink" title="WindowsHook注入"></a>WindowsHook注入</h2><p>我的错误理解： 设置钩子 → 等键盘消息触发hook → 这时系统才加载 DLL → 然后恶意代码执行</p>
+<p>实际的顺序：</p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br><span class="line">25</span><br><span class="line">26</span><br></pre></td><td class="code"><pre><span class="line">flowchart TD</span><br><span class="line">    Start([&quot;🧑‍💻 攻击者进程&lt;br/&gt;(launcher.exe)&quot;]) --&gt; CallHook[&quot;① 调用 SetWindowsHookEx&lt;br/&gt;idHook, lpfn, hMod, dwThreadId&quot;]</span><br><span class="line">    CallHook --&gt; Record[&quot;② Windows 内部记录钩子信息&lt;br/&gt;• 回调函数地址 lpfn&lt;br/&gt;• DLL 模块句柄 hMod&lt;br/&gt;• 目标线程 ID dwThreadId&quot;]</span><br><span class="line">    Record --&gt; NotLoaded[&quot;⚠️ 关键点：此时 evil.dll&lt;br/&gt;尚未被加载到目标进程&quot;]</span><br><span class="line">    NotLoaded --&gt; WaitMsg&#123;&quot;③ 目标线程&lt;br/&gt;处理消息?&quot;&#125;</span><br><span class="line">    WaitMsg --&gt;|&quot;否 (等待中)&quot;| WaitMsg</span><br><span class="line">    WaitMsg --&gt;|&quot;是&quot;| GetMsg[&quot;④ 目标线程调用&lt;br/&gt;GetMessage / PeekMessage&quot;]</span><br><span class="line">    GetMsg --&gt; CheckHook[&quot;⑤ user32.dll 检查&lt;br/&gt;该线程的钩子链表&quot;]</span><br><span class="line">    CheckHook --&gt; HasHook&#123;&quot;⑥ 存在&lt;br/&gt;钩子?&quot;&#125;</span><br><span class="line">    HasHook --&gt;|&quot;否&quot;| NormalFlow[&quot;正常消息处理&lt;br/&gt;继续消息循环&quot;]</span><br><span class="line">    HasHook --&gt;|&quot;是&quot;| LoadLib[&quot;⑦ user32.dll 调用&lt;br/&gt;LoadLibraryW 加载 evil.dll&quot;]</span><br><span class="line">    LoadLib --&gt; Map[&quot;⑧ evil.dll 映射到&lt;br/&gt;目标进程地址空间&quot;]</span><br><span class="line">    Map --&gt; DllMain[&quot;⑨ 调用 evil.dll 的 DllMain&lt;br/&gt;DLL_PROCESS_ATTACH&quot;]</span><br><span class="line">    DllMain --&gt; Exec[&quot;⭐ 恶意代码执行&lt;br/&gt;(RunShellcode 等)&quot;]</span><br><span class="line">    Exec --&gt; CallBack[&quot;⑩ user32.dll 调用&lt;br/&gt;钩子回调 HookProc&quot;]</span><br><span class="line">    CallBack --&gt; CallNext[&quot;⑪ HookProc 内部调用&lt;br/&gt;CallNextHookEx&quot;]</span><br><span class="line">    CallNext --&gt; Continue[&quot;⑫ 传递给下一个钩子&lt;br/&gt;或目标窗口过程&quot;]</span><br><span class="line">    Continue --&gt; Loop[&quot;⑬ 目标线程继续&lt;br/&gt;消息循环&quot;]</span><br><span class="line">    Loop --&gt; WaitMsg</span><br><span class="line"></span><br><span class="line">    style Start fill:#e1f5ff,stroke:#0066cc</span><br><span class="line">    style NotLoaded fill:#ffe1e1,stroke:#cc0000</span><br><span class="line">    style LoadLib fill:#fff4e1,stroke:#ff8800</span><br><span class="line">    style DllMain fill:#ffcccc,stroke:#cc0000</span><br><span class="line">    style Exec fill:#cc0000,color:#fff,stroke:#000</span><br><span class="line">    style CallBack fill:#e1f5ff,stroke:#0066cc</span><br></pre></td></tr></table></figure>
+
+
+
+<p>所以钩子的回调函数其实是个”装饰品”</p>
+<p>为什么会把dll映射到目标进程： 因为钩子回调要在目标进程的地址空间里执行，而不同进程的地址空间是隔离的。</p>
+<p>这里有个局限性：被注入的进程，例如notepad.exe必须要先启动，否则我们获取不到它的主线程地址，这个问题是后面的 CreateRemoteThread解决的核心问题</p>
+<h3 id="找PID和TID"><a href="#找PID和TID" class="headerlink" title="找PID和TID"></a>找PID和TID</h3><p><strong>寻找notepad的PID</strong></p>
+<ul>
+<li>用CreateToolhelp32Snapshot获取所有进程的快照</li>
+<li>遍历所有进程名称，找到notepad.exe,返回PID</li>
+</ul>
+<p><img src="/images/%E8%BF%9B%E7%A8%8B%E6%B3%A8%E5%85%A5/image-20260714133221560.png" alt="image-20260714133221560"></p>
+<p><strong>寻找TID</strong></p>
+<ul>
+<li>用EnumWindows遍历所有窗口，传入我们自己的回调函数FindTopWindowsProc</li>
+<li>FindTopWindowsProc用于筛选是否是我们要的GUI窗口的线程，返回TID</li>
+</ul>
+<p><img src="/images/%E8%BF%9B%E7%A8%8B%E6%B3%A8%E5%85%A5/image-20260714141411690.png" alt="image-20260714141411690"></p>
+<p><img src="/images/%E8%BF%9B%E7%A8%8B%E6%B3%A8%E5%85%A5/image-20260714141745061.png" alt="image-20260714141745061"></p>
+<p>找到notepad的PID和TID</p>
+<p><img src="/images/%E8%BF%9B%E7%A8%8B%E6%B3%A8%E5%85%A5/image-20260714142043853.png" alt="image-20260714142043853"></p>
+<h3 id="写evil-dll"><a href="#写evil-dll" class="headerlink" title="写evil.dll"></a>写evil.dll</h3><p><strong>写hook函数</strong></p>
+<p><code>extern</code>不是常用的声明变量在别的文件中，这里的<code>extern &quot;C&quot;</code>是一种<strong>链接规范</strong>，告诉编译器这个函数名用c语言的方式编译。</p>
+<p>因为C++允许函数重载，两个名字相同的函数，编译器区分它们的方式是将它们的函数名改造成带参数类型的名字，导出表中的函数名也是这样的，导致GetProcAddress(MyhookProc)就会找不到</p>
+<p><code>__declspec(dllexport)</code>的作用是把这个函数列入dll的导出表，编译器看到这个标签就把函数放入 DLL的导出表</p>
+<p><img src="/images/%E8%BF%9B%E7%A8%8B%E6%B3%A8%E5%85%A5/image-20260714155238049.png" alt="image-20260714155238049"></p>
+<p><img src="/images/%E8%BF%9B%E7%A8%8B%E6%B3%A8%E5%85%A5/image-20260714160502961.png" alt="image-20260714160502961"></p>
+<p><img src="/images/%E8%BF%9B%E7%A8%8B%E6%B3%A8%E5%85%A5/image-20260714160231121.png" alt="image-20260714160231121"></p>
+<p><strong>写DLLMain</strong></p>
+<p>弹出一个窗口，显示进程的PID</p>
+<p><img src="/images/%E8%BF%9B%E7%A8%8B%E6%B3%A8%E5%85%A5/image-20260714170554332.png" alt="image-20260714170554332"></p>
+<h3 id="设置windowshook"><a href="#设置windowshook" class="headerlink" title="设置windowshook"></a>设置windowshook</h3><ul>
+<li>加载evil.dll</li>
+<li>获取MyHookProc的函数地址</li>
+</ul>
+<p><img src="/images/%E8%BF%9B%E7%A8%8B%E6%B3%A8%E5%85%A5/image-20260714171833216.png" alt="image-20260714171833216"></p>
+<ul>
+<li><p>设置WindowsHook</p>
+<p><img src="/images/%E8%BF%9B%E7%A8%8B%E6%B3%A8%E5%85%A5/image-20260714171947550.png" alt="image-20260714171947550"></p>
+</li>
+</ul>
+<h3 id="问题"><a href="#问题" class="headerlink" title="问题"></a>问题</h3><p>这里有个问题，用setwindowsHook设置evil.dll中的回调函数，需要先加载evil.dll，这样会导致直接触发了我们dllmain中的恶意代码</p>
+<p><img src="/images/%E8%BF%9B%E7%A8%8B%E6%B3%A8%E5%85%A5/image-20260714172427911.png" alt="image-20260714172427911"></p>
+<p><img src="/images/%E8%BF%9B%E7%A8%8B%E6%B3%A8%E5%85%A5/image-20260714172510045.png" alt="image-20260714172510045"></p>
+<p>所以我们需要在dllmain中加判断，如果是notepad的进程才执行，否则不执行恶意代码</p>
+<p><img src="/images/%E8%BF%9B%E7%A8%8B%E6%B3%A8%E5%85%A5/image-20260714183322825.png" alt="image-20260714183322825"></p>
+<h2 id="CreateRemoteThread注入"><a href="#CreateRemoteThread注入" class="headerlink" title="CreateRemoteThread注入"></a>CreateRemoteThread注入</h2><h3 id="查找notepad进程pid"><a href="#查找notepad进程pid" class="headerlink" title="查找notepad进程pid"></a>查找notepad进程pid</h3><p>这个和之前的windowshook中的方式一样</p>
+<p><img src="/images/%E8%BF%9B%E7%A8%8B%E6%B3%A8%E5%85%A5/image-20260714191257993.png" alt="image-20260714191257993"></p>
+<h3 id="申请权限-获取notepad的句柄"><a href="#申请权限-获取notepad的句柄" class="headerlink" title="申请权限+获取notepad的句柄"></a>申请权限+获取notepad的句柄</h3><p><img src="/images/%E8%BF%9B%E7%A8%8B%E6%B3%A8%E5%85%A5/image-20260714191324970.png" alt="image-20260714191324970"></p>
+<h3 id="在notepad中分配内存"><a href="#在notepad中分配内存" class="headerlink" title="在notepad中分配内存"></a>在notepad中分配内存</h3><p><img src="/images/%E8%BF%9B%E7%A8%8B%E6%B3%A8%E5%85%A5/image-20260714192736905.png" alt="image-20260714192736905"></p>
+<h3 id="获取evil-dll的路径-写入notepad内存"><a href="#获取evil-dll的路径-写入notepad内存" class="headerlink" title="获取evil.dll的路径+写入notepad内存"></a>获取evil.dll的路径+写入notepad内存</h3><p><img src="/images/%E8%BF%9B%E7%A8%8B%E6%B3%A8%E5%85%A5/image-20260714193856190.png" alt="image-20260714193856190"></p>
+<p><img src="/images/%E8%BF%9B%E7%A8%8B%E6%B3%A8%E5%85%A5/image-20260714193938664.png" alt="image-20260714193938664"></p>
+<h3 id="获取LoadLibraryW地址"><a href="#获取LoadLibraryW地址" class="headerlink" title="获取LoadLibraryW地址"></a>获取LoadLibraryW地址</h3><ul>
+<li><p>拿到kernel32.dll句柄</p>
+<p><img src="/images/%E8%BF%9B%E7%A8%8B%E6%B3%A8%E5%85%A5/image-20260715092419344.png" alt="image-20260715092419344"></p>
+</li>
+<li><p>拿到LoadLibraryW的函数地址</p>
+<p><img src="/images/%E8%BF%9B%E7%A8%8B%E6%B3%A8%E5%85%A5/image-20260715092532180.png" alt="image-20260715092532180"></p>
+</li>
+</ul>
+<h3 id="CreateRemoteThread加载evil-dll"><a href="#CreateRemoteThread加载evil-dll" class="headerlink" title="CreateRemoteThread加载evil.dll"></a>CreateRemoteThread加载evil.dll</h3><p><img src="/images/%E8%BF%9B%E7%A8%8B%E6%B3%A8%E5%85%A5/image-20260715093633383.png" alt="image-20260715093633383"></p>
+<p>CreateRemoteThread在notepad.exe创建远程线程，执行LoadLibraryW函数，线程参数就是函数加载的DLL的路径的地址</p>
+<p><img src="/images/%E8%BF%9B%E7%A8%8B%E6%B3%A8%E5%85%A5/image-20260715103606483.png" alt="image-20260715103606483"></p>
+<h2 id="DLL劫持"><a href="#DLL劫持" class="headerlink" title="DLL劫持"></a>DLL劫持</h2><h3 id="DLL的加载顺序"><a href="#DLL的加载顺序" class="headerlink" title="DLL的加载顺序"></a>DLL的加载顺序</h3><p>Windows 加载 DLL 时按以下顺序查找：</p>
+<pre><code> 1. 应用程序所在的目录                          
+ 2. 系统目录 (C:\Windows\System32)
+ 3. 16 位系统目录 (C:\Windows\System)
+ 4. Windows 目录 (C:\Windows)
+ 5. 当前工作目录
+ 6. PATH 环境变量中的目录
+</code></pre>
+<p>注册表 HKLM\System\CurrentControlSet\Control\SessionManager\KnownDLLs下的DLL永远从系统目录加载，这些是不能劫持的</p>
+<p><img src="/images/%E8%BF%9B%E7%A8%8B%E6%B3%A8%E5%85%A5/image-20260715111011567.png" alt="image-20260715111011567"></p>
+<h3 id="函数转发"><a href="#函数转发" class="headerlink" title="函数转发"></a>函数转发</h3><p>原DLL中的导出表的函数，我们的DLL也要实现相同的功能</p>
+<p>有两种实现方式：</p>
+<p><strong>方式A：运行时转发（手动调用真 DLL）</strong></p>
+<p>DllMain 里加载真 DLL，每个转发函数里 <code>GetProcAddress</code> 调真函数。</p>
+<figure class="highlight cpp"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br><span class="line">25</span><br><span class="line">26</span><br><span class="line">27</span><br><span class="line">28</span><br><span class="line">29</span><br><span class="line">30</span><br><span class="line">31</span><br></pre></td><td class="code"><pre><span class="line"><span class="comment">// 我们的&quot;伪装&quot;sqlite3.dll</span></span><br><span class="line"></span><br><span class="line"><span class="comment">// 静态变量：保存真 sqlite3 的句柄和函数指针</span></span><br><span class="line"><span class="type">static</span> HMODULE g_hRealSqlite3 = <span class="literal">nullptr</span>;</span><br><span class="line"><span class="type">static</span> <span class="type">void</span>*   g_pfnOpen       = <span class="literal">nullptr</span>;</span><br><span class="line"></span><br><span class="line"><span class="comment">// DllMain：加载真正的 sqlite3.dll</span></span><br><span class="line"><span class="function">BOOL APIENTRY <span class="title">DllMain</span><span class="params">(HMODULE hModule, DWORD reason, LPVOID reserved)</span> </span>&#123;</span><br><span class="line">    <span class="keyword">if</span> (reason == DLL_PROCESS_ATTACH) &#123;</span><br><span class="line">        <span class="comment">// 加载真正的 sqlite3.dll（用绝对路径，绕过我们的&quot;伪装&quot;）</span></span><br><span class="line">        <span class="type">wchar_t</span> sysDir[MAX_PATH];</span><br><span class="line">        <span class="built_in">GetSystemDirectoryW</span>(sysDir, MAX_PATH);</span><br><span class="line">        <span class="type">wchar_t</span> realPath[MAX_PATH];</span><br><span class="line">        <span class="built_in">swprintf_s</span>(realPath, MAX_PATH, <span class="string">L&quot;%s\\sqlite3.dll&quot;</span>, sysDir);</span><br><span class="line">        g_hRealSqlite3 = <span class="built_in">LoadLibraryW</span>(realPath);</span><br><span class="line">        </span><br><span class="line">        <span class="comment">// 解析函数指针</span></span><br><span class="line">        g_pfnOpen = (<span class="type">void</span>*)<span class="built_in">GetProcAddress</span>(g_hRealSqlite3, <span class="string">&quot;sqlite3_open&quot;</span>);</span><br><span class="line">        </span><br><span class="line">        <span class="comment">// 恶意代码</span></span><br><span class="line">        <span class="built_in">MessageBoxW</span>(<span class="literal">NULL</span>, <span class="string">L&quot;DLL 劫持成功！&quot;</span>, <span class="string">L&quot;evil&quot;</span>, <span class="number">0</span>);</span><br><span class="line">    &#125;</span><br><span class="line">    <span class="keyword">return</span> TRUE;</span><br><span class="line">&#125;</span><br><span class="line"></span><br><span class="line"><span class="comment">// 转发 sqlite3_open</span></span><br><span class="line"><span class="keyword">extern</span> <span class="string">&quot;C&quot;</span> __declspec(dllexport)</span><br><span class="line"><span class="function"><span class="type">int</span> <span class="title">sqlite3_open</span><span class="params">(<span class="type">const</span> <span class="type">char</span>* filename, <span class="type">void</span>** ppDb)</span> </span>&#123;</span><br><span class="line">    <span class="function"><span class="keyword">typedef</span> <span class="title">int</span> <span class="params">(*Fn)</span><span class="params">(<span class="type">const</span> <span class="type">char</span>*, <span class="type">void</span>**)</span></span>;</span><br><span class="line">    <span class="keyword">return</span> ((Fn)g_pfnOpen)(filename, ppDb);</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+
+<p><strong>特点</strong>：</p>
+<ul>
+<li>手动控制每个函数</li>
+<li>代码量大（要写每个函数）</li>
+<li>可以加 hook 逻辑</li>
+</ul>
+<p><strong>方式 B：链接时转发（最优雅，编译器自动处理）</strong></p>
+<p>用 <code>.def</code> 文件声明”这个函数转发到那个 DLL 的那个函数”，编译器自动生成跳转。</p>
+<p><strong>步骤 1：写一个 .def 文件</strong></p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br></pre></td><td class="code"><pre><span class="line">; our_sqlite3.def</span><br><span class="line">LIBRARY &quot;sqlite3&quot;</span><br><span class="line">EXPORTS</span><br><span class="line">    sqlite3_open    = sqlite3_real.sqlite3_open</span><br><span class="line">    sqlite3_close   = sqlite3_real.sqlite3_close</span><br><span class="line">    sqlite3_exec    = sqlite3_real.sqlite3_exec</span><br><span class="line">    ; ... 其他函数</span><br></pre></td></tr></table></figure>
+
+<p><strong>含义</strong>：当程序调用我们 DLL 的 <code>sqlite3_open</code> 时，自动跳转到 <code>sqlite3_real.dll</code> 里的 <code>sqlite3_open</code>。</p>
+<p><strong>步骤 2：DllMain 只写恶意代码</strong></p>
+<figure class="highlight cpp"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br></pre></td><td class="code"><pre><span class="line"><span class="comment">// 我们的&quot;伪装&quot;sqlite3.dll</span></span><br><span class="line"><span class="meta">#<span class="keyword">include</span> <span class="string">&lt;windows.h&gt;</span></span></span><br><span class="line"></span><br><span class="line"><span class="function">BOOL APIENTRY <span class="title">DllMain</span><span class="params">(HMODULE hModule, DWORD reason, LPVOID reserved)</span> </span>&#123;</span><br><span class="line">    <span class="keyword">if</span> (reason == DLL_PROCESS_ATTACH) &#123;</span><br><span class="line">        <span class="comment">// 恶意代码</span></span><br><span class="line">        <span class="built_in">MessageBoxW</span>(<span class="literal">NULL</span>, <span class="string">L&quot;DLL 劫持成功！&quot;</span>, <span class="string">L&quot;evil&quot;</span>, <span class="number">0</span>);</span><br><span class="line">    &#125;</span><br><span class="line">    <span class="keyword">return</span> TRUE;</span><br><span class="line">&#125;</span><br><span class="line"><span class="comment">// 没有 sqlite3_open 等函数体——链接器根据 .def 自动生成转发</span></span><br></pre></td></tr></table></figure>
+
+<p><strong>特点</strong>：</p>
+<ul>
+<li>不用写函数体</li>
+<li>不用手动 LoadLibrary + GetProcAddress</li>
+<li>系统在 DLL 加载时自动找到 <code>sqlite3_real.dll</code> 并转发</li>
+</ul>
+<h2 id="进程镂空-Process-Hollowing"><a href="#进程镂空-Process-Hollowing" class="headerlink" title="进程镂空(Process Hollowing)"></a>进程镂空(Process Hollowing)</h2><p>创建一个”挂起”的合法进程，把它在内存中的代码卸载，写入我们自己的 PE文件，然后恢复执行。</p>
+<p>复现过程遇到的问题：</p>
+<ul>
+<li>卸载notepad是卸载的PE在内存的映像，而我们读取的evil.exe是PE文件在磁盘的格式，因此需要转换。</li>
+<li>我们在目标进程申请的空间的基址和PE文件的基址是不同的，因此需要修改重定位表和入口地址</li>
+</ul>
+<h3 id="准备一个evil-exe"><a href="#准备一个evil-exe" class="headerlink" title="准备一个evil.exe"></a>准备一个evil.exe</h3><ul>
+<li>简单的弹窗功能</li>
+</ul>
+<p><img src="/images/%E8%BF%9B%E7%A8%8B%E6%B3%A8%E5%85%A5/image-20260715134833227.png" alt="image-20260715134833227"></p>
+<h3 id="读取evil-exe的PE文件"><a href="#读取evil-exe的PE文件" class="headerlink" title="读取evil.exe的PE文件"></a>读取evil.exe的PE文件</h3><ul>
+<li>用CreateFileW打开evil.exe，获取文件句柄</li>
+<li>用GetFileSize获取文件大小</li>
+<li>调用ReadFile，根据文件句柄、文件大小，把文件的数据存放到vector中</li>
+<li>vector<BYTE> buffer存放了PE文件的所有数据，但函数结束vector会被析构，用静态变量延长生命周期</li>
+</ul>
+<p><img src="/images/%E8%BF%9B%E7%A8%8B%E6%B3%A8%E5%85%A5/image-20260715135011351.png" alt="image-20260715135011351"></p>
+<ul>
+<li>main函数的开头调用</li>
+</ul>
+<p><img src="/images/%E8%BF%9B%E7%A8%8B%E6%B3%A8%E5%85%A5/image-20260715135804992.png" alt="image-20260715135804992"></p>
+<h3 id="根据PE文件结构解析"><a href="#根据PE文件结构解析" class="headerlink" title="根据PE文件结构解析"></a>根据PE文件结构解析</h3><ul>
+<li>获取了ntHeader的地址，后续可以凭借指针得到所需的PE信息</li>
+</ul>
+<p><img src="/images/%E8%BF%9B%E7%A8%8B%E6%B3%A8%E5%85%A5/image-20260715135853770.png" alt="image-20260715135853770"></p>
+<h3 id="用CreateProcess创建挂起的notepad-exe"><a href="#用CreateProcess创建挂起的notepad-exe" class="headerlink" title="用CreateProcess创建挂起的notepad.exe"></a>用CreateProcess创建挂起的notepad.exe</h3><p><img src="/images/%E8%BF%9B%E7%A8%8B%E6%B3%A8%E5%85%A5/image-20260715141514420.png" alt="image-20260715141514420"></p>
+<p><img src="/images/%E8%BF%9B%E7%A8%8B%E6%B3%A8%E5%85%A5/image-20260715142545642.png" alt="image-20260715142545642"></p>
+<p><strong>PROCESS_INSTRUCTION 结构体</strong></p>
+<figure class="highlight c++"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">typedef</span> <span class="keyword">struct</span> <span class="title class_">_PROCESS_INFORMATION</span> &#123;</span><br><span class="line">    HANDLE hProcess;       <span class="comment">// 进程句柄 </span></span><br><span class="line">    HANDLE hThread;        <span class="comment">// 主线程句柄 </span></span><br><span class="line">    DWORD  dwProcessId;    <span class="comment">// 进程 ID（PID）</span></span><br><span class="line">    DWORD  dwThreadId;     <span class="comment">// 主线程 ID（TID）</span></span><br><span class="line">&#125; PROCESS_INFORMATION;</span><br></pre></td></tr></table></figure>
+
+<h3 id="从PEB读取notepad的ImageBase"><a href="#从PEB读取notepad的ImageBase" class="headerlink" title="从PEB读取notepad的ImageBase"></a>从PEB读取notepad的ImageBase</h3><p><img src="/images/%E8%BF%9B%E7%A8%8B%E6%B3%A8%E5%85%A5/image-20260715143056380.png" alt="image-20260715143056380"></p>
+<h3 id="卸载notepad原模块"><a href="#卸载notepad原模块" class="headerlink" title="卸载notepad原模块"></a>卸载notepad原模块</h3><p><img src="/images/%E8%BF%9B%E7%A8%8B%E6%B3%A8%E5%85%A5/image-20260715144143454.png" alt="image-20260715144143454"></p>
+<h3 id="VirtualAllocEx在目标进程申请空间"><a href="#VirtualAllocEx在目标进程申请空间" class="headerlink" title="VirtualAllocEx在目标进程申请空间"></a>VirtualAllocEx在目标进程申请空间</h3><p><img src="/images/%E8%BF%9B%E7%A8%8B%E6%B3%A8%E5%85%A5/image-20260715145155408.png" alt="image-20260715145155408"><img src="/images/%E8%BF%9B%E7%A8%8B%E6%B3%A8%E5%85%A5/image-20260715145715422.png" alt="image-20260715145715422"></p>
+<h3 id="evil-exe磁盘布局→内存布局"><a href="#evil-exe磁盘布局→内存布局" class="headerlink" title="evil.exe磁盘布局→内存布局"></a>evil.exe磁盘布局→内存布局</h3><p>一开始直接用<code>WriteProcessMemory(peBuffer, peSize)</code>把PE文件直接写到申请的空间</p>
+<p>正确做法是：要先按照节表中的VA展开</p>
+<p><img src="/images/%E8%BF%9B%E7%A8%8B%E6%B3%A8%E5%85%A5/image-20260722100444910.png" alt="image-20260722100444910"></p>
+<p><img src="/images/%E8%BF%9B%E7%A8%8B%E6%B3%A8%E5%85%A5/image-20260722100523356.png" alt="image-20260722100523356"></p>
+<p><img src="/images/%E8%BF%9B%E7%A8%8B%E6%B3%A8%E5%85%A5/image-20260722095825878.png" alt="image-20260722095825878"></p>
+<h3 id="重定位"><a href="#重定位" class="headerlink" title="重定位"></a>重定位</h3><p>remoteBase:我们VirtualAllocEx在notepad申请空间的基址</p>
+<p>PreferBase是PE文件中的ImageBase</p>
+<p><img src="/images/%E8%BF%9B%E7%A8%8B%E6%B3%A8%E5%85%A5/image-20260717125628630.png" alt="image-20260717125628630"></p>
+<p><img src="/images/%E8%BF%9B%E7%A8%8B%E6%B3%A8%E5%85%A5/image-20260717125608956.png" alt="image-20260717125608956"></p>
+<p>由于Windows有ALSR，基址是随机化的</p>
+<p><img src="/images/%E8%BF%9B%E7%A8%8B%E6%B3%A8%E5%85%A5/image-20260717125813816.png" alt="image-20260717125813816"></p>
+<p>不是每条指令都需要重定位的，PE中有一批绝对地址，例如：</p>
+<ul>
+<li>全局&#x2F;静态变量里存的指针</li>
+<li>虚表、一些数据结构里的地址</li>
+</ul>
+<p>这些都会写在PE结构的<code>.reloc</code>中</p>
+<p>根据PE结构从可选头中找到<code>.reloc</code>的地址</p>
+<p><img src="/images/%E8%BF%9B%E7%A8%8B%E6%B3%A8%E5%85%A5/image-20260717132547540.png" alt="image-20260717132547540"></p>
+<p><img src="/images/%E8%BF%9B%E7%A8%8B%E6%B3%A8%E5%85%A5/image-20260717132534848.png" alt="image-20260717132534848"></p>
+<p><code>.reloc</code>的结构：有若干个重定位块</p>
+<p>重定位块以一个 <code>IMAGE_BASE_RELOCATION</code> 结构作为开始，其结构体如下：</p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br></pre></td><td class="code"><pre><span class="line">typedef struct _IMAGE_BASE_RELOCATION &#123;</span><br><span class="line">    DWORD    VirtualAddress;  // 重定位页的 RVA</span><br><span class="line">    DWORD    SizeOfBlock;     // 重定位块的大小</span><br><span class="line">     WORD    TypeOffset;      // 重定位条目的类型于偏移</span><br><span class="line"></span><br><span class="line">&#125; _IMAGE_BASE_RELOCATION;</span><br></pre></td></tr></table></figure>
+
+<ul>
+<li><p>**VirtualAddress 重定位页 RVA。**基址加上页 RVA 的和作为被加数，再加上重定位项对应的 offset 就能得到其在内存中实际的 VA。</p>
+</li>
+<li><p><strong>SizeOfBlock 基址重定位块的大小。包括 VirtualAddress，SizeOfBlock，以及后面 TypeOffset 的大小。</strong></p>
+</li>
+<li><p><strong>TypeOffset</strong> 一个数组。数组中每个元素大小为 2 个字节，即 16 位。</p>
+<ul>
+<li>**type 高 4 位用于表示重定位的类型。**0&#x3D;ABS 对齐填充, 3&#x3D;HIGHLOW 按32位绝对地址改, 10&#x3D;DIR64 按 64 位绝对地址改</li>
+<li><strong>offset 低 12 位用于表示重定位数据位置相对于页 RVA 的偏移量。</strong></li>
+</ul>
+</li>
+</ul>
+<p><img src="/images/%E8%BF%9B%E7%A8%8B%E6%B3%A8%E5%85%A5/image-20260717133010538.png" alt="image-20260717133010538"></p>
+<p><img src="/images/%E8%BF%9B%E7%A8%8B%E6%B3%A8%E5%85%A5/image-20260717140535008.png" alt="image-20260717140535008"></p>
+<p>dumpbin查看重定位表更清楚</p>
+<p><img src="/images/%E8%BF%9B%E7%A8%8B%E6%B3%A8%E5%85%A5/image-20260717141922178.png" alt="image-20260717141922178"></p>
+<p><strong>外层循环：</strong></p>
+<p>一个 block 一个 block 遍历，计算出block中offset数组有多少元素</p>
+<p><img src="/images/%E8%BF%9B%E7%A8%8B%E6%B3%A8%E5%85%A5/image-20260717142647194.png" alt="image-20260717142647194"></p>
+<p><strong>内层循环：</strong></p>
+<p>targetRVA&#x3D;页RVA + offset</p>
+<p>在内存的地址 patch&#x3D; image的基址 + targetRVA</p>
+<p>32位：</p>
+<ul>
+<li>先读4字节到value中</li>
+<li>value +&#x3D; delta (delta是实际分配的基址和预期的基址的偏移)</li>
+<li>将4字节value写回</li>
+</ul>
+<p>64位：</p>
+<ul>
+<li>同理32位，读8字节</li>
+</ul>
+<p><img src="/images/%E8%BF%9B%E7%A8%8B%E6%B3%A8%E5%85%A5/image-20260717143926847.png" alt="image-20260717143926847"></p>
+<p><img src="/images/%E8%BF%9B%E7%A8%8B%E6%B3%A8%E5%85%A5/image-20260717143247927.png" alt="image-20260717143247927"></p>
+<p>调试这个过程：</p>
+<p><img src="/images/%E8%BF%9B%E7%A8%8B%E6%B3%A8%E5%85%A5/image-20260717150808414.png" alt="image-20260717150808414"></p>
+<p><img src="/images/%E8%BF%9B%E7%A8%8B%E6%B3%A8%E5%85%A5/image-20260717150955380.png" alt="image-20260717150955380"></p>
+<p><img src="/images/%E8%BF%9B%E7%A8%8B%E6%B3%A8%E5%85%A5/image-20260717151707560.png" alt="image-20260717151707560"></p>
+<p>把这值放到value中，然后加上delta，就是重定位后的地址</p>
+<p><img src="/images/%E8%BF%9B%E7%A8%8B%E6%B3%A8%E5%85%A5/image-20260717151912912.png" alt="image-20260717151912912"></p>
+<p>然后将重定位好的地址写回</p>
+<p><img src="/images/%E8%BF%9B%E7%A8%8B%E6%B3%A8%E5%85%A5/image-20260717152136077.png" alt="image-20260717152136077"></p>
+<h3 id="修改入口点-恢复Thread"><a href="#修改入口点-恢复Thread" class="headerlink" title="修改入口点 + 恢复Thread"></a>修改入口点 + 恢复Thread</h3><p><strong>CONTEXT &#x3D; CPU 寄存器的当前状态快照</strong> 一个线程被挂起时，CPU 的所有寄存器都被”冻结”保存起来。SetThreadContext 写回去。</p>
+<p><img src="/images/%E8%BF%9B%E7%A8%8B%E6%B3%A8%E5%85%A5/image-20260715151831998.png" alt="image-20260715151831998"></p>
+<p>所以ctx中的入口点是notepad的入口点，我们需要修改入口点</p>
+<p>新的入口点&#x3D;新的基址+nt头的入口点RVA</p>
+<p><img src="/images/%E8%BF%9B%E7%A8%8B%E6%B3%A8%E5%85%A5/image-20260717154119987.png" alt="image-20260717154119987"></p>
+<p><img src="/images/%E8%BF%9B%E7%A8%8B%E6%B3%A8%E5%85%A5/image-20260717155523924.png" alt="image-20260717155523924"></p>
+<h2 id="APC注入"><a href="#APC注入" class="headerlink" title="APC注入"></a>APC注入</h2><p> APC（Asynchronous Procedure Call，异步过程调用） 是 Windows 内核异步体系的一部分。每个线程都有一个 APC 队列（FIFO）。可以把一个函数指针 +<br>参数放进这个队列。线程不会立刻执行，只有在它进入 Alertable（可告警）状态 时，内核才会检查该线程的 APC 队列若非空 → 按 FIFO 依次执行</p>
+<p>一些能进入Alertable状态的API：</p>
+<table>
+<thead>
+<tr>
+<th>API</th>
+<th>本职功能</th>
+<th>何时 alertable</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>SleepEx(ms, bAlertable)</code></td>
+<td>睡指定毫秒</td>
+<td><code>bAlertable == TRUE</code></td>
+</tr>
+<tr>
+<td><code>WaitForSingleObjectEx(h, ms, bAlertable)</code></td>
+<td>等一个内核对象（事件&#x2F;互斥&#x2F;进程&#x2F;线程…）</td>
+<td><code>bAlertable == TRUE</code></td>
+</tr>
+<tr>
+<td><code>WaitForMultipleObjectsEx(...)</code></td>
+<td>等多个对象中的一个&#x2F;全部</td>
+<td><code>bAlertable == TRUE</code></td>
+</tr>
+<tr>
+<td><code>SignalObjectAndWait(h1, h2, ms, bAlertable)</code></td>
+<td>先 signal 一个对象，再 wait 另一个（原子组合）</td>
+<td><code>bAlertable == TRUE</code></td>
+</tr>
+<tr>
+<td><code>MsgWaitForMultipleObjectsEx(...)</code></td>
+<td>等对象 或 窗口消息（GUI 常用）</td>
+<td>带 <code>MWMO_ALERTABLE</code></td>
+</tr>
+<tr>
+<td><code>GetQueuedCompletionStatusEx</code></td>
+<td>从 I&#x2F;O 完成端口取完成包</td>
+<td>可 alertable 等待</td>
+</tr>
+</tbody></table>
+<h3 id="APC回调函数："><a href="#APC回调函数：" class="headerlink" title="APC回调函数："></a>APC回调函数：</h3><p><img src="/images/%E8%BF%9B%E7%A8%8B%E6%B3%A8%E5%85%A5/image-20260717174718176.png" alt="image-20260717174718176"></p>
+<h3 id="入队："><a href="#入队：" class="headerlink" title="入队："></a>入队：</h3><p><img src="/images/%E8%BF%9B%E7%A8%8B%E6%B3%A8%E5%85%A5/image-20260717174809131.png" alt="image-20260717174809131"></p>
+<h3 id="用可alertable的函数触发"><a href="#用可alertable的函数触发" class="headerlink" title="用可alertable的函数触发"></a>用可alertable的函数触发</h3><p><img src="/images/%E8%BF%9B%E7%A8%8B%E6%B3%A8%E5%85%A5/image-20260717174943790.png" alt="image-20260717174943790"></p>
+<p><img src="/images/%E8%BF%9B%E7%A8%8B%E6%B3%A8%E5%85%A5/image-20260717175007856.png" alt="image-20260717175007856"></p>
+<h3 id="问题："><a href="#问题：" class="headerlink" title="问题："></a>问题：</h3><p><strong>只有进入alertable才能触发我们的回调，因此如何触发是个问题</strong></p>
+<ul>
+<li>把所有线程全都QueueUserAPC，但这样做很影响目标进程效率</li>
+<li>使用其他的改进技术，如earlybird技术</li>
+</ul>
+<h2 id="EarlyBird-注入"><a href="#EarlyBird-注入" class="headerlink" title="EarlyBird 注入"></a>EarlyBird 注入</h2><figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br></pre></td><td class="code"><pre><span class="line">1. CreateProcess(svchost.exe, ..., CREATE_SUSPENDED)   ← 挂起启动</span><br><span class="line">2. VirtualAllocEx + WriteProcessMemory                  ← 写恶意代码</span><br><span class="line">3. QueueUserAPC(NtQueueApcThread) → 主线程             ← 入队</span><br><span class="line">4. ResumeThread                                          ← 唤醒</span><br></pre></td></tr></table></figure>
+
+<p><strong>每个用户态线程的第一段执行路径是固定的：</strong></p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br></pre></td><td class="code"><pre><span class="line">LdrInitializeThunk        ← ntdll，所有用户线程都从这里起跑</span><br><span class="line">        │</span><br><span class="line">        ▼</span><br><span class="line">LdrpInitialize</span><br><span class="line">        │</span><br><span class="line">        ▼</span><br><span class="line">_LdrpInitialize</span><br><span class="line">        │</span><br><span class="line">        ▼</span><br><span class="line">NtTestAlert              ← 检查本线程 APC 队列，有就告知内核</span><br><span class="line">        │</span><br><span class="line">        ▼</span><br><span class="line">内核准备返回用户态时跳到 KiUserApcDispatcher</span><br><span class="line">        │</span><br><span class="line">        ▼</span><br><span class="line">执行我们 QueueUserAPC 塞进去的代码 ← 这里跑恶意逻辑</span><br><span class="line">        │</span><br><span class="line">        ▼</span><br><span class="line">继续走正常的进程初始化（CRT 入口、main……）</span><br></pre></td></tr></table></figure>
+
+<p>因此我们在挂起态先把我们的构造好的函数放到APC队列中，然后恢复进程，就会被启动流程中的NtTestAlert检查APC队列，执行我们的函数</p>
+<p>我按照这个流程写了一个demo，如果注入成功会在记事本窗口出现前先出现弹窗</p>
+<p><img src="/images/%E8%BF%9B%E7%A8%8B%E6%B3%A8%E5%85%A5/image-20260720135815673.png" alt="image-20260720135815673"></p>
+<h3 id="问题：-1"><a href="#问题：-1" class="headerlink" title="问题："></a>问题：</h3><ol>
+<li>写入notepad进程的evil.dll的地址应该用绝对地址，因为notepad的地址在system32里面，和evil.dll不在一个文件夹下</li>
+<li>跨进程APC注入，挂到目标进程APC队列的函数必须是目标进程地址空间里存在的函数。</li>
+</ol>
+<p>我自定义了一个回调函数APCproc，功能是加载evil.dll ，这个函数的地址只在EarlyBird.exe的地址空间有效，而这个回调函数是在notepad 的线程上执行。</p>
+<p>所以我们传入APC队列的函数必须是注入进程中存在的函数。</p>
+<p>有哪些函数?</p>
+<ul>
+<li>kernel32.dll默认会被编译器通过加载时链接的方式链接到notepad.exe中，所以可以传入kernel32中的Loadlibrary</li>
+</ul>
+<p>如何得到notepad中Loadlibrary的函数地址？</p>
+<ul>
+<li>kernel32.dll在同一启动会话里所有进程基址相同，我们在EarlyBird.exe中用 GetProcAddress拿到的地址在 notepad 里也有效。</li>
+</ul>
+<p><img src="/images/%E8%BF%9B%E7%A8%8B%E6%B3%A8%E5%85%A5/image-20260720171538281.png" alt="image-20260720171538281"></p>
+<p>可以看到弹窗出现，而此时notepad还没有初始化，在任务管理器看不到</p>
+<p><img src="/images/%E8%BF%9B%E7%A8%8B%E6%B3%A8%E5%85%A5/image-20260720171846289.png" alt="image-20260720171846289"></p>
+<h2 id="进程参数投毒"><a href="#进程参数投毒" class="headerlink" title="进程参数投毒"></a>进程参数投毒</h2><blockquote>
+<p><a target="_blank" rel="noopener" href="https://github.com/Orange-Cyberdefense/p3-loader">https://github.com/Orange-Cyberdefense/p3-loader</a></p>
+</blockquote>
+<h3 id="1-CreateProcess"><a href="#1-CreateProcess" class="headerlink" title="1.CreateProcess"></a>1.CreateProcess</h3><p>三个 case 的核心区别就是：<strong>毒数据放在 CreateProcessW 的哪个参数里</strong>。函数签名：</p>
+<figure class="highlight c"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br></pre></td><td class="code"><pre><span class="line">BOOL <span class="title function_">CreateProcessW</span><span class="params">(</span></span><br><span class="line"><span class="params">    LPCWSTR               lpApplicationName,    <span class="comment">// ① 程序路径</span></span></span><br><span class="line"><span class="params">    LPWSTR                lpCommandLine,        <span class="comment">// ② 命令行</span></span></span><br><span class="line"><span class="params">    LPSECURITY_ATTRIBUTES lpProcessAttributes,  <span class="comment">// ③ 进程安全属性</span></span></span><br><span class="line"><span class="params">    LPSECURITY_ATTRIBUTES lpThreadAttributes,   <span class="comment">// ④ 线程安全属性</span></span></span><br><span class="line"><span class="params">    BOOL                  bInheritHandles,      <span class="comment">// ⑤ 句柄继承</span></span></span><br><span class="line"><span class="params">    DWORD                 dwCreationFlags,      <span class="comment">// ⑥ 创建标志</span></span></span><br><span class="line"><span class="params">    LPVOID                lpEnvironment,        <span class="comment">// ⑦ 环境变量块</span></span></span><br><span class="line"><span class="params">    LPCWSTR               lpCurrentDirectory,   <span class="comment">// ⑧ 工作目录</span></span></span><br><span class="line"><span class="params">    LPSTARTUPINFOW        lpStartupInfo,        <span class="comment">// ⑨ 启动信息（内含 ShellInfo）</span></span></span><br><span class="line"><span class="params">    LPPROCESS_INFORMATION lpProcessInformation  <span class="comment">// ⑩ 进程信息（输出）</span></span></span><br><span class="line"><span class="params">)</span>;</span><br></pre></td></tr></table></figure>
+
+<p><img src="/images/%E8%BF%9B%E7%A8%8B%E6%B3%A8%E5%85%A5/image-20260721142222775.png" alt="image-20260721142222775"></p>
+<h3 id="2-NtQueryInformationProcess-拿到PEB-基址"><a href="#2-NtQueryInformationProcess-拿到PEB-基址" class="headerlink" title="2.NtQueryInformationProcess 拿到PEB 基址"></a>2.NtQueryInformationProcess 拿到PEB 基址</h3><figure class="highlight c++"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br></pre></td><td class="code"><pre><span class="line"><span class="function">NTSTATUS <span class="title">NtQueryInformationProcess</span><span class="params">(</span></span></span><br><span class="line"><span class="params"><span class="function">    HANDLE           hProcess,                <span class="comment">// ① 目标进程句柄</span></span></span></span><br><span class="line"><span class="params"><span class="function">    PROCESSINFOCLASS ProcessInformationClass,  <span class="comment">// ② 要查什么信息</span></span></span></span><br><span class="line"><span class="params"><span class="function">    PVOID            ProcessInformation,       <span class="comment">// ③ 输出缓冲区</span></span></span></span><br><span class="line"><span class="params"><span class="function">    ULONG            ProcessInformationLength, <span class="comment">// ④ 缓冲区大小</span></span></span></span><br><span class="line"><span class="params"><span class="function">    PULONG           ReturnLength              <span class="comment">// ⑤ 实际返回字节数</span></span></span></span><br><span class="line"><span class="params"><span class="function">)</span></span>;</span><br></pre></td></tr></table></figure>
+
+<p><img src="/images/%E8%BF%9B%E7%A8%8B%E6%B3%A8%E5%85%A5/image-20260721145252973.png" alt="image-20260721145252973"></p>
+<h3 id="3-读PEB和Parameters"><a href="#3-读PEB和Parameters" class="headerlink" title="3.读PEB和Parameters"></a>3.读PEB和Parameters</h3><p><strong>读PEB结构：</strong></p>
+<p><img src="/images/%E8%BF%9B%E7%A8%8B%E6%B3%A8%E5%85%A5/image-20260721145840603.png" alt="image-20260721145840603"></p>
+<p><strong>读PEB → RTL_USER_PROCESS_PARAMETERS：</strong></p>
+<p><img src="/images/%E8%BF%9B%E7%A8%8B%E6%B3%A8%E5%85%A5/image-20260721150016220.png" alt="image-20260721150016220"></p>
+<h3 id="4-找到shellcode"><a href="#4-找到shellcode" class="headerlink" title="4.找到shellcode"></a>4.找到shellcode</h3><p>三者最终都落入 <code>PEB → RTL_USER_PROCESS_PARAMETERS</code> 的不同字段，但后续定位 Shellcode 偏移的逻辑完全一样（都是 <code>Buffer地址 + 4 + 4096</code>）。</p>
+<p><img src="/images/%E8%BF%9B%E7%A8%8B%E6%B3%A8%E5%85%A5/image-20260721150354667.png" alt="image-20260721150354667"></p>
+<h3 id="5-改内存为RX"><a href="#5-改内存为RX" class="headerlink" title="5.改内存为RX"></a>5.改内存为RX</h3><p><img src="/images/%E8%BF%9B%E7%A8%8B%E6%B3%A8%E5%85%A5/image-20260721153253822.png" alt="image-20260721153253822"></p>
+<h3 id="6-主线程-RIP-重定向执行"><a href="#6-主线程-RIP-重定向执行" class="headerlink" title="6.主线程 RIP 重定向执行"></a>6.主线程 RIP 重定向执行</h3><ul>
+<li>检查是否进程开启CFG</li>
+<li>读取当前线程上下文</li>
+<li>改RIP</li>
+<li>将ctx写回线程</li>
+</ul>
+<p><img src="/images/%E8%BF%9B%E7%A8%8B%E6%B3%A8%E5%85%A5/image-20260721153835804.png" alt="image-20260721153835804"></p>
+<h3 id="处理空字节问题"><a href="#处理空字节问题" class="headerlink" title="处理空字节问题"></a>处理空字节问题</h3><p> Windows 的 CreateProcessW 会把参数数据（命令行、环境变量、ShellInfo 等）作为 UTF-16 宽字符串 拷贝到子进程PEB。拷贝逻辑在遇到两个连续的 0x00 字节（即宽字符的 null terminator）时就会停止。<strong>如果 Shellcode 机器码中有 \x00\x00 出现在偶数对齐位置，后面的数据全部丢失。</strong></p>
+<p><strong>解决方法：</strong></p>
+<p>重写shellcode：</p>
+<ul>
+<li>将shellcode的每8字节和&#x2F;x01&#x2F;x01&#x2F;x01&#x2F;x01&#x2F;x01&#x2F;x01&#x2F;x01&#x2F;x01异或，得到无空字节的8个字节</li>
+<li>新的shellcode每8字节用汇编写xor的解密过程</li>
+<li><img src="/images/%E8%BF%9B%E7%A8%8B%E6%B3%A8%E5%85%A5/image-20260721155036781.png" alt="image-20260721155036781"></li>
+</ul>
+<h3 id="结果测试"><a href="#结果测试" class="headerlink" title="结果测试"></a>结果测试</h3><p><img src="/images/%E8%BF%9B%E7%A8%8B%E6%B3%A8%E5%85%A5/image-20260721095625346.png" alt="image-20260721095625346"></p>
+<p><img src="/images/%E8%BF%9B%E7%A8%8B%E6%B3%A8%E5%85%A5/image-20260721100220789.png" alt="image-20260721100220789"></p>
+<p><img src="/images/%E8%BF%9B%E7%A8%8B%E6%B3%A8%E5%85%A5/image-20260721100557333.png" alt="image-20260721100557333"></p>
+<p><img src="/images/%E8%BF%9B%E7%A8%8B%E6%B3%A8%E5%85%A5/image-20260721105654867.png" alt="image-20260721105654867"></p>
+<p><strong>用msf的meterpreter&#x2F;reverse_https的shellcode：</strong></p>
+<p><img src="/images/%E8%BF%9B%E7%A8%8B%E6%B3%A8%E5%85%A5/image-20260721155552980.png" alt="image-20260721155552980"></p>
+<p><img src="/images/%E8%BF%9B%E7%A8%8B%E6%B3%A8%E5%85%A5/image-20260721155722358.png" alt="image-20260721155722358"></p>
+</article><div class="post-copyright"><div class="post-copyright__author"><span class="post-copyright-meta"><i class="fas fa-circle-user fa-fw"></i>文章作者: </span><span class="post-copyright-info"><a href="https://spherica233.github.io">spherica233</a></span></div><div class="post-copyright__type"><span class="post-copyright-meta"><i class="fas fa-square-arrow-up-right fa-fw"></i>文章链接: </span><span class="post-copyright-info"><a href="https://spherica233.github.io/2026/07/22/%E8%BF%9B%E7%A8%8B%E6%B3%A8%E5%85%A5/">https://spherica233.github.io/2026/07/22/%E8%BF%9B%E7%A8%8B%E6%B3%A8%E5%85%A5/</a></span></div><div class="post-copyright__notice"><span class="post-copyright-meta"><i class="fas fa-circle-exclamation fa-fw"></i>版权声明: </span><span class="post-copyright-info">本博客所有文章除特别声明外，均采用 <a href="https://creativecommons.org/licenses/by-nc-sa/4.0/" target="_blank">CC BY-NC-SA 4.0</a> 许可协议。转载请注明来源 <a href="https://spherica233.github.io" target="_blank">我的博客</a>！</span></div></div><div class="tag_share"><div class="post-share"><div class="social-share" data-image="/img/avatar.png" data-sites="facebook,x,wechat,weibo,qq"></div><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/butterfly-extsrc@1.1.6/sharejs/dist/css/share.min.css" media="print" onload="this.media='all'"><script src="https://cdn.jsdelivr.net/npm/butterfly-extsrc@1.1.6/sharejs/dist/js/social-share.min.js" defer></script></div></div><nav class="pagination-post" id="pagination"><a class="pagination-related full-width" href="/2026/08/01/hello-world/" title="Hello World"><div class="cover" style="background: var(--default-bg-color)"></div><div class="info"><div class="info-1"><div class="info-item-1">上一篇</div><div class="info-item-2">Hello World</div></div><div class="info-2"><div class="info-item-1">Welcome to Hexo! This is your very first post. Check documentation for more info. If you get any problems when using Hexo, you can find the answer in troubleshooting or you can ask me on GitHub. Quick StartCreate a new post1$ hexo new &quot;My New Post&quot;  More info: Writing Run server1$ hexo server  More info: Server Generate static files1$ hexo generate  More info: Generating Deploy to remote sites1$ hexo deploy  More info: Deployment </div></div></div></a></nav></div><div class="aside-content" id="aside-content"><div class="card-widget card-info text-center"><div class="avatar-img"><img src="/img/avatar.png" onerror="this.onerror=null;this.src='/img/friend_404.gif'" alt="avatar"/></div><div class="author-info-name">spherica233</div><div class="author-info-description"></div><div class="site-data"><a href="/archives/"><div class="headline">文章</div><div class="length-num">2</div></a><a href="/tags/"><div class="headline">标签</div><div class="length-num">0</div></a><a href="/categories/"><div class="headline">分类</div><div class="length-num">2</div></a></div><a id="card-info-btn" target="_blank" rel="noopener" href="https://github.com/spherica233"><i class="fab fa-github"></i><span>Follow Me</span></a><div class="card-info-social-icons"><a class="social-icon" href="https://github.com/spherica233" target="_blank" title="Github"><i class="fab fa-github" style="color: #24292e;"></i></a><a class="social-icon" href="mailto:example@example.com" target="_blank" title="Email"><i class="fas fa-envelope" style="color: #4a7dbe;"></i></a></div></div><div class="card-widget card-announcement"><div class="item-headline"><i class="fas fa-bullhorn fa-shake"></i><span>公告</span></div><div class="announcement_content">欢迎来到我的博客</div></div><div class="sticky_layout"><div class="card-widget" id="card-toc"><div class="item-headline"><i class="fas fa-stream"></i><span>目录</span><span class="toc-percentage"></span></div><div class="toc-content"><ol class="toc"><li class="toc-item toc-level-1"><a class="toc-link" href="#%E8%BF%9B%E7%A8%8B%E6%B3%A8%E5%85%A5"><span class="toc-number">1.</span> <span class="toc-text">进程注入</span></a><ol class="toc-child"><li class="toc-item toc-level-2"><a class="toc-link" href="#WindowsHook%E6%B3%A8%E5%85%A5"><span class="toc-number">1.1.</span> <span class="toc-text">WindowsHook注入</span></a><ol class="toc-child"><li class="toc-item toc-level-3"><a class="toc-link" href="#%E6%89%BEPID%E5%92%8CTID"><span class="toc-number">1.1.1.</span> <span class="toc-text">找PID和TID</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#%E5%86%99evil-dll"><span class="toc-number">1.1.2.</span> <span class="toc-text">写evil.dll</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#%E8%AE%BE%E7%BD%AEwindowshook"><span class="toc-number">1.1.3.</span> <span class="toc-text">设置windowshook</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#%E9%97%AE%E9%A2%98"><span class="toc-number">1.1.4.</span> <span class="toc-text">问题</span></a></li></ol></li><li class="toc-item toc-level-2"><a class="toc-link" href="#CreateRemoteThread%E6%B3%A8%E5%85%A5"><span class="toc-number">1.2.</span> <span class="toc-text">CreateRemoteThread注入</span></a><ol class="toc-child"><li class="toc-item toc-level-3"><a class="toc-link" href="#%E6%9F%A5%E6%89%BEnotepad%E8%BF%9B%E7%A8%8Bpid"><span class="toc-number">1.2.1.</span> <span class="toc-text">查找notepad进程pid</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#%E7%94%B3%E8%AF%B7%E6%9D%83%E9%99%90-%E8%8E%B7%E5%8F%96notepad%E7%9A%84%E5%8F%A5%E6%9F%84"><span class="toc-number">1.2.2.</span> <span class="toc-text">申请权限+获取notepad的句柄</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#%E5%9C%A8notepad%E4%B8%AD%E5%88%86%E9%85%8D%E5%86%85%E5%AD%98"><span class="toc-number">1.2.3.</span> <span class="toc-text">在notepad中分配内存</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#%E8%8E%B7%E5%8F%96evil-dll%E7%9A%84%E8%B7%AF%E5%BE%84-%E5%86%99%E5%85%A5notepad%E5%86%85%E5%AD%98"><span class="toc-number">1.2.4.</span> <span class="toc-text">获取evil.dll的路径+写入notepad内存</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#%E8%8E%B7%E5%8F%96LoadLibraryW%E5%9C%B0%E5%9D%80"><span class="toc-number">1.2.5.</span> <span class="toc-text">获取LoadLibraryW地址</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#CreateRemoteThread%E5%8A%A0%E8%BD%BDevil-dll"><span class="toc-number">1.2.6.</span> <span class="toc-text">CreateRemoteThread加载evil.dll</span></a></li></ol></li><li class="toc-item toc-level-2"><a class="toc-link" href="#DLL%E5%8A%AB%E6%8C%81"><span class="toc-number">1.3.</span> <span class="toc-text">DLL劫持</span></a><ol class="toc-child"><li class="toc-item toc-level-3"><a class="toc-link" href="#DLL%E7%9A%84%E5%8A%A0%E8%BD%BD%E9%A1%BA%E5%BA%8F"><span class="toc-number">1.3.1.</span> <span class="toc-text">DLL的加载顺序</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#%E5%87%BD%E6%95%B0%E8%BD%AC%E5%8F%91"><span class="toc-number">1.3.2.</span> <span class="toc-text">函数转发</span></a></li></ol></li><li class="toc-item toc-level-2"><a class="toc-link" href="#%E8%BF%9B%E7%A8%8B%E9%95%82%E7%A9%BA-Process-Hollowing"><span class="toc-number">1.4.</span> <span class="toc-text">进程镂空(Process Hollowing)</span></a><ol class="toc-child"><li class="toc-item toc-level-3"><a class="toc-link" href="#%E5%87%86%E5%A4%87%E4%B8%80%E4%B8%AAevil-exe"><span class="toc-number">1.4.1.</span> <span class="toc-text">准备一个evil.exe</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#%E8%AF%BB%E5%8F%96evil-exe%E7%9A%84PE%E6%96%87%E4%BB%B6"><span class="toc-number">1.4.2.</span> <span class="toc-text">读取evil.exe的PE文件</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#%E6%A0%B9%E6%8D%AEPE%E6%96%87%E4%BB%B6%E7%BB%93%E6%9E%84%E8%A7%A3%E6%9E%90"><span class="toc-number">1.4.3.</span> <span class="toc-text">根据PE文件结构解析</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#%E7%94%A8CreateProcess%E5%88%9B%E5%BB%BA%E6%8C%82%E8%B5%B7%E7%9A%84notepad-exe"><span class="toc-number">1.4.4.</span> <span class="toc-text">用CreateProcess创建挂起的notepad.exe</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#%E4%BB%8EPEB%E8%AF%BB%E5%8F%96notepad%E7%9A%84ImageBase"><span class="toc-number">1.4.5.</span> <span class="toc-text">从PEB读取notepad的ImageBase</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#%E5%8D%B8%E8%BD%BDnotepad%E5%8E%9F%E6%A8%A1%E5%9D%97"><span class="toc-number">1.4.6.</span> <span class="toc-text">卸载notepad原模块</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#VirtualAllocEx%E5%9C%A8%E7%9B%AE%E6%A0%87%E8%BF%9B%E7%A8%8B%E7%94%B3%E8%AF%B7%E7%A9%BA%E9%97%B4"><span class="toc-number">1.4.7.</span> <span class="toc-text">VirtualAllocEx在目标进程申请空间</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#evil-exe%E7%A3%81%E7%9B%98%E5%B8%83%E5%B1%80%E2%86%92%E5%86%85%E5%AD%98%E5%B8%83%E5%B1%80"><span class="toc-number">1.4.8.</span> <span class="toc-text">evil.exe磁盘布局→内存布局</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#%E9%87%8D%E5%AE%9A%E4%BD%8D"><span class="toc-number">1.4.9.</span> <span class="toc-text">重定位</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#%E4%BF%AE%E6%94%B9%E5%85%A5%E5%8F%A3%E7%82%B9-%E6%81%A2%E5%A4%8DThread"><span class="toc-number">1.4.10.</span> <span class="toc-text">修改入口点 + 恢复Thread</span></a></li></ol></li><li class="toc-item toc-level-2"><a class="toc-link" href="#APC%E6%B3%A8%E5%85%A5"><span class="toc-number">1.5.</span> <span class="toc-text">APC注入</span></a><ol class="toc-child"><li class="toc-item toc-level-3"><a class="toc-link" href="#APC%E5%9B%9E%E8%B0%83%E5%87%BD%E6%95%B0%EF%BC%9A"><span class="toc-number">1.5.1.</span> <span class="toc-text">APC回调函数：</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#%E5%85%A5%E9%98%9F%EF%BC%9A"><span class="toc-number">1.5.2.</span> <span class="toc-text">入队：</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#%E7%94%A8%E5%8F%AFalertable%E7%9A%84%E5%87%BD%E6%95%B0%E8%A7%A6%E5%8F%91"><span class="toc-number">1.5.3.</span> <span class="toc-text">用可alertable的函数触发</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#%E9%97%AE%E9%A2%98%EF%BC%9A"><span class="toc-number">1.5.4.</span> <span class="toc-text">问题：</span></a></li></ol></li><li class="toc-item toc-level-2"><a class="toc-link" href="#EarlyBird-%E6%B3%A8%E5%85%A5"><span class="toc-number">1.6.</span> <span class="toc-text">EarlyBird 注入</span></a><ol class="toc-child"><li class="toc-item toc-level-3"><a class="toc-link" href="#%E9%97%AE%E9%A2%98%EF%BC%9A-1"><span class="toc-number">1.6.1.</span> <span class="toc-text">问题：</span></a></li></ol></li><li class="toc-item toc-level-2"><a class="toc-link" href="#%E8%BF%9B%E7%A8%8B%E5%8F%82%E6%95%B0%E6%8A%95%E6%AF%92"><span class="toc-number">1.7.</span> <span class="toc-text">进程参数投毒</span></a><ol class="toc-child"><li class="toc-item toc-level-3"><a class="toc-link" href="#1-CreateProcess"><span class="toc-number">1.7.1.</span> <span class="toc-text">1.CreateProcess</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#2-NtQueryInformationProcess-%E6%8B%BF%E5%88%B0PEB-%E5%9F%BA%E5%9D%80"><span class="toc-number">1.7.2.</span> <span class="toc-text">2.NtQueryInformationProcess 拿到PEB 基址</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#3-%E8%AF%BBPEB%E5%92%8CParameters"><span class="toc-number">1.7.3.</span> <span class="toc-text">3.读PEB和Parameters</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#4-%E6%89%BE%E5%88%B0shellcode"><span class="toc-number">1.7.4.</span> <span class="toc-text">4.找到shellcode</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#5-%E6%94%B9%E5%86%85%E5%AD%98%E4%B8%BARX"><span class="toc-number">1.7.5.</span> <span class="toc-text">5.改内存为RX</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#6-%E4%B8%BB%E7%BA%BF%E7%A8%8B-RIP-%E9%87%8D%E5%AE%9A%E5%90%91%E6%89%A7%E8%A1%8C"><span class="toc-number">1.7.6.</span> <span class="toc-text">6.主线程 RIP 重定向执行</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#%E5%A4%84%E7%90%86%E7%A9%BA%E5%AD%97%E8%8A%82%E9%97%AE%E9%A2%98"><span class="toc-number">1.7.7.</span> <span class="toc-text">处理空字节问题</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#%E7%BB%93%E6%9E%9C%E6%B5%8B%E8%AF%95"><span class="toc-number">1.7.8.</span> <span class="toc-text">结果测试</span></a></li></ol></li></ol></li></ol></div></div><div class="card-widget card-recent-post"><div class="item-headline"><i class="fas fa-history"></i><span>最新文章</span></div><div class="aside-list"><div class="aside-list-item no-cover"><div class="content"><a class="title" href="/2026/08/01/hello-world/" title="Hello World">Hello World</a><time datetime="2026-08-01T11:10:05.251Z" title="发表于 2026-08-01 19:10:05">2026-08-01</time></div></div><div class="aside-list-item no-cover"><div class="content"><a class="title" href="/2026/07/22/%E8%BF%9B%E7%A8%8B%E6%B3%A8%E5%85%A5/" title="进程注入">进程注入</a><time datetime="2026-07-21T16:00:00.000Z" title="发表于 2026-07-22 00:00:00">2026-07-22</time></div></div></div></div></div></div></main><footer id="footer"><div class="footer-other"><div class="footer-copyright"><span class="copyright">&copy;&nbsp;2026 By spherica233</span><span class="framework-info"><span>框架 </span><a target="_blank" rel="noopener" href="https://hexo.io">Hexo 8.1.2</a><span class="footer-separator">|</span><span>主题 </span><a target="_blank" rel="noopener" href="https://github.com/jerryc127/hexo-theme-butterfly">Butterfly 5.6.1</a></span></div></div></footer></div><div id="rightside"><div id="rightside-config-hide"><button id="readmode" type="button" title="阅读模式"><i class="fas fa-book-open"></i></button><button id="darkmode" type="button" title="日间和夜间模式切换"><i class="fas fa-adjust"></i></button><button id="hide-aside-btn" type="button" title="单栏和双栏切换"><i class="fas fa-arrows-alt-h"></i></button></div><div id="rightside-config-show"><button id="rightside-config" type="button" title="设置"><i class="fas fa-cog fa-spin"></i></button><button class="close" id="mobile-toc-button" type="button" title="目录"><i class="fas fa-list-ul"></i></button><button id="go-up" type="button" title="回到顶部"><span class="scroll-percent"></span><i class="fas fa-arrow-up"></i></button></div></div><div><script src="/js/utils.js?v=5.6.1"></script><script src="/js/main.js?v=5.6.1"></script><script src="https://cdn.jsdelivr.net/npm/@fancyapps/ui@6.1.14/dist/fancybox/fancybox.umd.min.js"></script><div class="js-pjax"><script>(() => {
+  const parseViewBox = viewBox => {
+    if (!viewBox) return null
+    const parts = viewBox.trim().split(/[\s,]+/).map(n => Number(n))
+    if (parts.length !== 4 || parts.some(n => Number.isNaN(n))) return null
+    return parts
+  }
+
+  const getSvgViewBox = svg => {
+    const attr = parseViewBox(svg.getAttribute('viewBox'))
+    if (attr) return attr
+
+    // Fallback: use bbox to build a viewBox
+    try {
+      const bbox = svg.getBBox()
+      if (bbox && bbox.width && bbox.height) return [bbox.x, bbox.y, bbox.width, bbox.height]
+    } catch (e) {
+      // getBBox may fail on some edge cases; ignore
+    }
+
+    const w = Number(svg.getAttribute('width')) || 0
+    const h = Number(svg.getAttribute('height')) || 0
+    if (w > 0 && h > 0) return [0, 0, w, h]
+    return [0, 0, 100, 100]
+  }
+
+  const setSvgViewBox = (svg, vb) => {
+    svg.setAttribute('viewBox', `${vb[0]} ${vb[1]} ${vb[2]} ${vb[3]}`)
+  }
+
+  const clamp = (v, min, max) => Math.max(min, Math.min(max, v))
+
+  const openSvgInNewTab = ({ source, initViewBox }) => {
+    const getClonedSvg = () => {
+      if (typeof source === 'string') {
+        const template = document.createElement('template')
+        template.innerHTML = source.trim()
+        const svg = template.content.querySelector('svg')
+        return svg ? svg.cloneNode(true) : null
+      }
+      if (source && typeof source.cloneNode === 'function') {
+        return source.cloneNode(true)
+      }
+      return null
+    }
+
+    const clone = getClonedSvg()
+    if (!clone) return
+    if (initViewBox && initViewBox.length === 4) {
+      clone.setAttribute('viewBox', initViewBox.join(' '))
+    }
+    if (!clone.getAttribute('xmlns')) clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg')
+    if (!clone.getAttribute('xmlns:xlink') && clone.innerHTML.includes('xlink:')) {
+      clone.setAttribute('xmlns:xlink', 'http://www.w3.org/1999/xlink')
+    }
+    // inject background to match current theme
+    const isDark = document.documentElement.getAttribute('data-theme') === 'dark'
+    const bg = getComputedStyle(document.body).backgroundColor || (isDark ? '#1e1e1e' : '#ffffff')
+    if (!clone.style.background) clone.style.background = bg
+
+    const serializer = new XMLSerializer()
+    const svgSource = serializer.serializeToString(clone)
+    const htmlSource = `<!doctype html><html><head><meta charset="utf-8" />
+      <style>
+        html, body { width: 100%; height: 100%; margin: 0; display: flex; align-items: center; justify-content: center; background: ${bg}; }
+        svg { max-width: 100%; max-height: 100%; height: auto; width: auto; }
+      </style>
+      </head><body>${svgSource}</body></html>`
+    const blob = new Blob([htmlSource], { type: 'text/html;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    window.open(url, '_blank', 'noopener')
+
+    setTimeout(() => URL.revokeObjectURL(url), 5000)
+  }
+
+  const attachMermaidViewerButton = wrap => {
+    let btn = wrap.querySelector('.mermaid-open-btn')
+    if (!btn) {
+      btn = document.createElement('button')
+      btn.type = 'button'
+      btn.className = 'mermaid-open-btn'
+      wrap.appendChild(btn)
+    }
+
+    btn.innerHTML = '<i class="fa fa-search fa-fw" aria-hidden="true"></i>'
+
+    if (!btn.__mermaidViewerBound) {
+      btn.addEventListener('click', e => {
+        e.preventDefault()
+        e.stopPropagation()
+        const svg = wrap.__mermaidOriginalSvg || wrap.querySelector('svg')
+        if (!svg) return
+        const initViewBox = wrap.__mermaidInitViewBox
+        openSvgInNewTab({ source: svg, initViewBox })
+      })
+      btn.__mermaidViewerBound = true
+    }
+  }
+
+  // Zoom around a point (px, py) in the SVG viewport (in viewBox coordinates)
+  const zoomAtPoint = (vb, factor, px, py) => {
+    const w = vb[2] * factor
+    const h = vb[3] * factor
+    const nx = px - (px - vb[0]) * factor
+    const ny = py - (py - vb[1]) * factor
+    return [nx, ny, w, h]
+  }
+
+  const initMermaidGestures = wrap => {
+    // Clean up previous event listeners and pending frames
+    if (wrap.__mermaidAbortController) {
+      wrap.__mermaidAbortController.abort()
+      if (wrap.__mermaidRafId) cancelAnimationFrame(wrap.__mermaidRafId)
+    }
+    const ac = new AbortController()
+    wrap.__mermaidAbortController = ac
+    const svg = wrap.querySelector('svg')
+    if (!svg) return
+
+    // Ensure viewBox exists so gestures always work
+    const initVb = getSvgViewBox(svg)
+    wrap.__mermaidInitViewBox = initVb
+    wrap.__mermaidCurViewBox = initVb.slice()
+    setSvgViewBox(svg, initVb)
+    // Disable default gestures to prevent scroll chaining and pinch-zoom penetration in Chrome
+    svg.style.touchAction = 'none'
+
+    // Cache BoundingClientRect, throttled on scroll to reduce reflow
+    let cachedRect = svg.getBoundingClientRect()
+    let rectDirty = false
+    const markRectDirty = () => { rectDirty = true }
+    window.addEventListener('resize', markRectDirty, { signal: ac.signal })
+    window.addEventListener('scroll', markRectDirty, { signal: ac.signal, capture: true })
+    const getRect = () => {
+      if (rectDirty) {
+        cachedRect = svg.getBoundingClientRect()
+        rectDirty = false
+      }
+      return cachedRect
+    }
+
+    // Precompute clamp bounds from initial viewBox
+    const minW = initVb[2] * 0.1
+    const maxW = initVb[2] * 10
+    const minH = initVb[3] * 0.1
+    const maxH = initVb[3] * 10
+    const clampVb = vb => {
+      const out = vb.slice()
+      out[2] = clamp(out[2], minW, maxW)
+      out[3] = clamp(out[3], minH, maxH)
+      return out
+    }
+
+    // Throttle DOM updates using requestAnimationFrame
+    let pendingVb = null
+    let rafId = null
+    const applyVb = () => {
+      if (pendingVb) {
+        wrap.__mermaidCurViewBox = pendingVb
+        setSvgViewBox(svg, pendingVb)
+        pendingVb = null
+      }
+      rafId = null
+      wrap.__mermaidRafId = null
+    }
+    const setCurVb = vb => {
+      pendingVb = clampVb(vb)
+      if (!rafId) {
+        rafId = requestAnimationFrame(applyVb)
+        wrap.__mermaidRafId = rafId
+      }
+    }
+
+    const state = {
+      pointers: new Map(),
+      startVb: null,
+      startDist: 0,
+      lastPointerX: 0,
+      lastPointerY: 0
+    }
+
+    const onPointerDown = e => {
+      if (e.pointerType === 'mouse' && e.button !== 0) return
+      svg.setPointerCapture(e.pointerId)
+      const curVb = wrap.__mermaidCurViewBox
+      state.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY })
+      if (state.pointers.size === 1) {
+        state.startVb = curVb.slice()
+        state.lastPointerX = e.clientX
+        state.lastPointerY = e.clientY
+      } else if (state.pointers.size === 2) {
+        const pts = [...state.pointers.values()]
+        const dx = pts[0].x - pts[1].x
+        const dy = pts[0].y - pts[1].y
+        state.startDist = Math.hypot(dx, dy)
+        state.startVb = curVb.slice()
+      }
+    }
+
+    const onPointerMove = e => {
+      if (!state.pointers.has(e.pointerId)) return
+      state.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY })
+      const curVb = wrap.__mermaidCurViewBox
+      const rect = getRect()
+      if (state.pointers.size === 1 && state.startVb) {
+        const p = state.pointers.values().next().value
+        const dxClient = p.x - state.lastPointerX
+        const dyClient = p.y - state.lastPointerY
+        state.lastPointerX = p.x
+        state.lastPointerY = p.y
+        const dx = dxClient * (curVb[2] / rect.width)
+        const dy = dyClient * (curVb[3] / rect.height)
+        setCurVb([curVb[0] - dx, curVb[1] - dy, curVb[2], curVb[3]])
+        return
+      }
+      if (state.pointers.size === 2 && state.startVb && state.startDist > 0) {
+        const pts = [...state.pointers.values()]
+        const dx = pts[0].x - pts[1].x
+        const dy = pts[0].y - pts[1].y
+        const dist = Math.hypot(dx, dy)
+        if (!dist) return
+        const factor = state.startDist / dist
+        const cx = (pts[0].x + pts[1].x) / 2
+        const cy = (pts[0].y + pts[1].y) / 2
+        const px = curVb[0] + (cx - rect.left) * (curVb[2] / rect.width)
+        const py = curVb[1] + (cy - rect.top) * (curVb[3] / rect.height)
+        setCurVb(zoomAtPoint(state.startVb, factor, px, py))
+      }
+    }
+
+    const onPointerUpOrCancel = e => {
+      // Release PointerCapture to avoid event capture anomalies
+      if (svg.hasPointerCapture && svg.hasPointerCapture(e.pointerId)) {
+        svg.releasePointerCapture(e.pointerId)
+      }
+      state.pointers.delete(e.pointerId)
+      if (state.pointers.size === 0) {
+        state.startVb = null
+        state.startDist = 0
+      } else if (state.pointers.size === 1) {
+        const p = state.pointers.values().next().value
+        state.lastPointerX = p.x
+        state.lastPointerY = p.y
+      }
+    }
+
+    const onWheel = e => {
+      // Prevent event bubbling from triggering external scroll
+      e.preventDefault()
+      e.stopPropagation()
+      // Normalize deltaY across deltaMode (Chrome uses pixels, Safari uses lines)
+      let delta = e.deltaY
+      if (e.deltaMode === 1) delta *= 16
+      else if (e.deltaMode === 2) delta *= 400
+
+      // Continuous zoom factor: smoother than fixed 1.1/0.9 steps
+      const zoomFactor = Math.pow(1.001, delta)
+
+      const curVb = wrap.__mermaidCurViewBox
+      const rect = getRect()
+      const px = curVb[0] + (e.clientX - rect.left) * (curVb[2] / rect.width)
+      const py = curVb[1] + (e.clientY - rect.top) * (curVb[3] / rect.height)
+      setCurVb(zoomAtPoint(curVb, zoomFactor, px, py))
+    }
+
+    const onDblClick = () => {
+      const init = wrap.__mermaidInitViewBox
+      if (init) setCurVb(init)
+    }
+
+    svg.addEventListener('pointerdown', onPointerDown, { signal: ac.signal })
+    svg.addEventListener('pointermove', onPointerMove, { signal: ac.signal })
+    svg.addEventListener('pointerup', onPointerUpOrCancel, { signal: ac.signal })
+    svg.addEventListener('pointercancel', onPointerUpOrCancel, { signal: ac.signal })
+    svg.addEventListener('wheel', onWheel, { passive: false, signal: ac.signal })
+    svg.addEventListener('dblclick', onDblClick, { signal: ac.signal })
+  }
+
+  const runMermaid = ele => {
+    window.loadMermaid = true
+    const theme = document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'default'
+    ele.forEach((item, index) => {
+      const mermaidSrc = item.firstElementChild
+      // Clean up event listeners before removing old SVG
+      if (item.__mermaidAbortController) {
+        item.__mermaidAbortController.abort()
+      }
+      const oldSvg = item.querySelector('svg')
+      if (oldSvg) oldSvg.remove()
+      let config = {}
+      try {
+        config = mermaidSrc.dataset.config ? JSON.parse(mermaidSrc.dataset.config) : {}
+      } catch (e) {
+        console.warn('[mermaid] failed to parse dataset.config:', e)
+      }
+      if (!config.theme) {
+        config.theme = theme
+      }
+      const mermaidThemeConfig = `%%{init: ${JSON.stringify(config)}}%%\n`
+      const mermaidID = `mermaid-${index}`
+      const mermaidDefinition = mermaidThemeConfig + mermaidSrc.textContent
+
+      const renderMermaid = svg => {
+        mermaidSrc.insertAdjacentHTML('afterend', svg)
+        if (true) initMermaidGestures(item)
+        item.__mermaidOriginalSvg = svg
+        if (true) attachMermaidViewerButton(item)
+      }
+
+      const handleError = err => {
+        console.error(`[mermaid] render failed for block #${index}:`, err)
+        const errorEl = document.createElement('div')
+        errorEl.className = 'mermaid-error'
+        errorEl.textContent = `Mermaid render error: ${err.message || err}`
+        mermaidSrc.insertAdjacentElement('afterend', errorEl)
+      }
+
+      try {
+        const renderFn = mermaid.render(mermaidID, mermaidDefinition)
+        // mermaid v9 and v10 compatibility
+        if (typeof renderFn === 'string') {
+          renderMermaid(renderFn)
+        } else {
+          renderFn.then(({ svg }) => renderMermaid(svg)).catch(handleError)
+        }
+      } catch (err) {
+        handleError(err)
+      }
+    })
+  }
+
+  const codeToMermaid = $article => {
+    const codeMermaidEle = $article.querySelectorAll('pre > code.mermaid')
+    if (codeMermaidEle.length === 0) return
+
+    codeMermaidEle.forEach(ele => {
+      const preEle = document.createElement('pre')
+      preEle.className = 'mermaid-src'
+      preEle.hidden = true
+      preEle.textContent = ele.textContent
+      const newEle = document.createElement('div')
+      newEle.className = 'mermaid-wrap'
+      newEle.appendChild(preEle)
+      ele.parentNode.replaceWith(newEle)
+    })
+  }
+
+  const loadMermaid = () => {
+    const $article = document.getElementById('article-container')
+    if (!$article) return
+
+    if (true) codeToMermaid($article)
+    const $mermaid = $article.querySelectorAll('.mermaid-wrap')
+    if ($mermaid.length === 0) return
+
+    const runMermaidFn = () => runMermaid($mermaid)
+    btf.addGlobalFn('themeChange', runMermaidFn, 'mermaid')
+    window.loadMermaid ? runMermaidFn() : btf.getScript('https://cdn.jsdelivr.net/npm/mermaid@11.16.0/dist/mermaid.min.js').then(runMermaidFn)
+  }
+
+  btf.addGlobalFn('encrypt', loadMermaid, 'mermaid')
+  window.pjax ? loadMermaid() : document.addEventListener('DOMContentLoaded', loadMermaid)
+})()</script></div><script src="https://cdn.jsdelivr.net/npm/live2d-widget@3.1.4/autoload.js"></script><script defer="defer" id="ribbon" src="https://cdn.jsdelivr.net/npm/butterfly-extsrc@1.1.6/dist/canvas-ribbon.min.js" size="150" alpha="0.6" zIndex="-1" mobile="true" data-click="true"></script><script async data-pjax src="//busuanzi.ibruce.info/busuanzi/2.3/busuanzi.pure.mini.js"></script><div id="local-search"><div class="search-dialog"><nav class="search-nav"><span class="search-dialog-title">搜索</span><i class="fas fa-spinner fa-pulse" id="loading-status" hidden="hidden"></i><button class="search-close-button"><i class="fas fa-times"></i></button></nav><div class="text-center" id="loading-database"><i class="fas fa-spinner fa-pulse"></i><span>  数据加载中</span></div><div class="local-search-input"><input placeholder="搜索文章" type="text"/></div><hr/><div id="local-search-results"></div><div class="ais-Pagination" id="local-search-pagination" style="display:none;"><ul class="ais-Pagination-list"></ul></div><div id="local-search-stats"></div></div><div id="search-mask"></div><script src="/js/search/local-search.js?v=5.6.1"></script></div></div></body></html>
