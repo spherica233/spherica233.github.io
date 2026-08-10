@@ -1,0 +1,809 @@
+<!DOCTYPE html><html lang="zh-CN" data-theme="light"><head><meta charset="UTF-8"><meta http-equiv="X-UA-Compatible" content="IE=edge"><meta name="viewport" content="width=device-width, initial-scale=1.0,viewport-fit=cover"><title>直接与间接Syscall及堆栈欺骗 | spherica's blog</title><meta name="author" content="spherica"><meta name="copyright" content="spherica"><meta name="format-detection" content="telephone=no"><meta name="theme-color" content="#ffffff"><meta name="description" content="直接 &#x2F; 间接 Syscall 与堆栈欺骗本文整理对 Direct Syscall、Indirect Syscall，以及 SysWhispers4 式栈顶欺骗的学习与复现：从高层 API 一路下沉到 syscall，再处理返回地址在调用栈上的异常。  一、从高层 API 到直接 Syscall要做的事始终没变：申请内存、写入 shellcode、创建线程执行。变化的是调用链下沉到哪一层">
+<meta property="og:type" content="article">
+<meta property="og:title" content="直接与间接Syscall及堆栈欺骗">
+<meta property="og:url" content="https://spherica233.github.io/2026/08/10/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/index.html">
+<meta property="og:site_name" content="spherica&#39;s blog">
+<meta property="og:description" content="直接 &#x2F; 间接 Syscall 与堆栈欺骗本文整理对 Direct Syscall、Indirect Syscall，以及 SysWhispers4 式栈顶欺骗的学习与复现：从高层 API 一路下沉到 syscall，再处理返回地址在调用栈上的异常。  一、从高层 API 到直接 Syscall要做的事始终没变：申请内存、写入 shellcode、创建线程执行。变化的是调用链下沉到哪一层">
+<meta property="og:locale" content="zh_CN">
+<meta property="og:image" content="https://spherica233.github.io/img/avatar.jpg">
+<meta property="article:published_time" content="2026-08-10T07:41:21.000Z">
+<meta property="article:modified_time" content="2026-08-10T07:46:55.782Z">
+<meta property="article:author" content="spherica">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:image" content="https://spherica233.github.io/img/avatar.jpg"><script type="application/ld+json">{
+  "@context": "https://schema.org",
+  "@type": "BlogPosting",
+  "headline": "直接与间接Syscall及堆栈欺骗",
+  "url": "https://spherica233.github.io/2026/08/10/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/",
+  "image": "https://spherica233.github.io/img/avatar.jpg",
+  "datePublished": "2026-08-10T07:41:21.000Z",
+  "dateModified": "2026-08-10T07:46:55.782Z",
+  "author": [
+    {
+      "@type": "Person",
+      "name": "spherica",
+      "url": "https://spherica233.github.io"
+    }
+  ]
+}</script><link rel="shortcut icon" href="/img/avatar.jpg"><link rel="canonical" href="https://spherica233.github.io/2026/08/10/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/index.html"><link rel="preconnect" href="//cdn.jsdelivr.net"/><link rel="preconnect" href="//busuanzi.ibruce.info"/><link rel="stylesheet" href="/css/index.css?v=5.6.1"><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@7.3.1/css/all.min.css"><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fancyapps/ui@6.1.14/dist/fancybox/fancybox.min.css" media="print" onload="this.media='all'"><script>
+    (() => {
+      
+    const saveToLocal = {
+      set: (key, value, ttl) => {
+        const data = { value }
+
+        if (ttl != null) {
+          data.expiry = Date.now() + ttl * 86400000
+        }
+
+        localStorage.setItem(key, JSON.stringify(data))
+      },
+      get: key => {
+        const itemStr = localStorage.getItem(key)
+        if (!itemStr) return
+
+        try {
+          const data = JSON.parse(itemStr)
+
+          if (data.expiry && Date.now() > data.expiry) {
+            localStorage.removeItem(key)
+            return
+          }
+
+          return data.value
+        } catch {
+          localStorage.removeItem(key)
+        }
+      }
+    }
+
+    const scriptCache = new Map()
+    const cssCache = new Map()
+    window.btf = {
+      saveToLocal,
+      getScript: (url, attr = {}) => {
+        if (scriptCache.has(url)) {
+          return scriptCache.get(url)
+        }
+
+        const promise = new Promise((resolve, reject) => {
+          const script = document.createElement('script')
+
+          script.src = url
+          script.async = true
+
+          for (const key in attr) {
+            script.setAttribute(key, attr[key])
+          }
+
+          script.onload = resolve
+          script.onerror = reject
+
+          document.head.appendChild(script)
+        })
+
+        scriptCache.set(url, promise)
+
+        return promise
+      },
+      getCSS: (url, id) => {
+        if (cssCache.has(url)) {
+          return cssCache.get(url)
+        }
+
+        const promise = new Promise((resolve, reject) => {
+          const link = document.createElement('link')
+
+          link.rel = 'stylesheet'
+          link.href = url
+
+          if (id) {
+            link.id = id
+          }
+
+          link.onload = resolve
+          link.onerror = reject
+
+          document.head.appendChild(link)
+        })
+
+        cssCache.set(url, promise)
+
+        return promise
+      },
+      addGlobalFn: (key, fn, name = false, parent = window) => {
+        if (!false && key.startsWith('pjax')) return
+        const globalFn = parent.globalFn || {}
+        globalFn[key] = globalFn[key] || {}
+        globalFn[key][name || Object.keys(globalFn[key]).length] = fn
+        parent.globalFn = globalFn
+      }
+    }
+  
+      
+      const metaThemeColor = document.querySelector('meta[name="theme-color"]')
+      const activateDarkMode = () => {
+        document.documentElement.dataset.theme = 'dark'
+        if (metaThemeColor !== null) {
+          metaThemeColor.setAttribute('content', '#0d0d0d')
+        }
+      }
+      const activateLightMode = () => {
+        document.documentElement.dataset.theme = 'light'
+        if (metaThemeColor !== null) {
+          metaThemeColor.setAttribute('content', '#ffffff')
+        }
+      }
+
+      btf.activateDarkMode = activateDarkMode
+      btf.activateLightMode = activateLightMode
+
+      const theme = saveToLocal.get('theme')
+    
+          theme === 'dark' ? activateDarkMode() : theme === 'light' ? activateLightMode() : null
+        
+      
+      const asideStatus = saveToLocal.get('aside-status')
+      if (asideStatus !== undefined) {
+        document.documentElement.classList.toggle('hide-aside', asideStatus === 'hide')
+      }
+    
+      
+    const detectApple = () => {
+      if (/iPad|iPhone|iPod|Macintosh/.test(navigator.userAgent)) {
+        document.documentElement.classList.add('apple')
+      }
+    }
+    detectApple()
+  
+    })()
+  </script><script>const GLOBAL_CONFIG = {
+  root: '/',
+  algolia: undefined,
+  localSearch: {"path":"/search.xml","preload":false,"top_n_per_article":1,"unescape":false,"pagination":{"enable":false,"hitsPerPage":8},"languages":{"hits_empty":"未找到符合您查询的内容：${query}","hits_stats":"共找到 ${hits} 篇文章"}},
+  translate: undefined,
+  highlight: {"plugin":"highlight.js","highlightCopy":true,"highlightLang":true,"highlightHeightLimit":false,"highlightFullpage":false,"highlightMacStyle":false},
+  copy: {
+    success: '复制成功',
+    error: '复制失败',
+    noSupport: '浏览器不支持'
+  },
+  relativeDate: {
+    homepage: false,
+    post: false
+  },
+  runtime: '天',
+  dateSuffix: {
+    just: '刚刚',
+    min: '分钟前',
+    hour: '小时前',
+    day: '天前',
+    month: '个月前'
+  },
+  copyright: undefined,
+  lightbox: 'fancybox',
+  Snackbar: undefined,
+  infinitegrid: {
+    js: 'https://cdn.jsdelivr.net/npm/@egjs/infinitegrid@4.13.0/dist/infinitegrid.min.js',
+    buttonText: '加载更多'
+  },
+  isPhotoFigcaption: false,
+  islazyloadPlugin: false,
+  isAnchor: false,
+  percent: {
+    toc: true,
+    rightside: false,
+  },
+  autoDarkmode: false
+}</script><script id="config-diff">var GLOBAL_CONFIG_SITE = {
+  title: '直接与间接Syscall及堆栈欺骗',
+  isHighlightShrink: false,
+  isToc: true,
+  pageType: 'post'
+}</script><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/live2d-widget@3.1.4/autoload.css"><meta name="generator" content="Hexo 8.1.2"></head><body><div id="sidebar"><div id="menu-mask"></div><div id="sidebar-menus"><div class="avatar-img text-center"><img src="/img/avatar.jpg" onerror="this.onerror=null;this.src='/img/friend_404.gif'" alt="avatar"/></div><div class="site-data text-center"><a href="/archives/"><div class="headline">文章</div><div class="length-num">2</div></a><a href="/tags/"><div class="headline">标签</div><div class="length-num">1</div></a><a href="/categories/"><div class="headline">分类</div><div class="length-num">2</div></a></div><div class="menus_items"><div class="menus_item"><a class="site-page" href="/"><i class="fa-fw fas fa-home"></i><span> 首页</span></a></div><div class="menus_item"><a class="site-page" href="/about/"><i class="fa-fw fas fa-heartbeat"></i><span> 关于</span></a></div><div class="menus_item"><a class="site-page" href="/archives/"><i class="fa-fw fas fa-history"></i><span> 时间轴</span></a></div><div class="menus_item"><a class="site-page" href="/tags/"><i class="fa-fw fas fa-tags"></i><span> 标签</span></a></div><div class="menus_item"><a class="site-page" href="/categories/"><i class="fa-fw fas fa-bars"></i><span> 分类</span></a></div></div></div></div><div class="post" id="body-wrap"><header class="post-bg" id="page-header" style="background-image: url(/img/whisper31.png);"><nav id="nav"><span id="blog-info"><a class="nav-site-title" href="/"><span class="site-name">spherica's blog</span></a><a class="nav-page-title" href="/"><span class="site-name">直接与间接Syscall及堆栈欺骗</span><span class="site-name"><i class="fa-solid fa-circle-arrow-left"></i><span>  返回首页</span></span></a></span><div id="menus"><div id="search-button"><span class="site-page social-icon search"><i class="fas fa-search fa-fw"></i><span> 搜索</span></span></div><div class="menus_items"><div class="menus_item"><a class="site-page" href="/"><i class="fa-fw fas fa-home"></i><span> 首页</span></a></div><div class="menus_item"><a class="site-page" href="/about/"><i class="fa-fw fas fa-heartbeat"></i><span> 关于</span></a></div><div class="menus_item"><a class="site-page" href="/archives/"><i class="fa-fw fas fa-history"></i><span> 时间轴</span></a></div><div class="menus_item"><a class="site-page" href="/tags/"><i class="fa-fw fas fa-tags"></i><span> 标签</span></a></div><div class="menus_item"><a class="site-page" href="/categories/"><i class="fa-fw fas fa-bars"></i><span> 分类</span></a></div></div><div id="toggle-menu"><span class="site-page"><i class="fas fa-bars fa-fw"></i></span></div></div></nav><div id="post-info"><h1 class="post-title">直接与间接Syscall及堆栈欺骗</h1><div id="post-meta"><div class="meta-firstline"><span class="post-meta-date"><i class="far fa-calendar-alt fa-fw post-meta-icon"></i><span class="post-meta-label">发表于</span><time class="post-meta-date-created" datetime="2026-08-10T07:41:21.000Z" title="发表于 2026-08-10 15:41:21">2026-08-10</time><span class="post-meta-separator">|</span><i class="fas fa-history fa-fw post-meta-icon"></i><span class="post-meta-label">更新于</span><time class="post-meta-date-updated" datetime="2026-08-10T07:46:55.782Z" title="更新于 2026-08-10 15:46:55">2026-08-10</time></span></div><div class="meta-secondline"><span class="post-meta-separator">|</span><span class="post-meta-wordcount"><i class="far fa-file-word fa-fw post-meta-icon"></i><span class="post-meta-label">总字数:</span><span class="word-count">3.2k</span><span class="post-meta-separator">|</span><i class="far fa-clock fa-fw post-meta-icon"></i><span class="post-meta-label">阅读时长:</span><span>11分钟</span></span><span class="post-meta-separator">|</span><span class="post-meta-pv-cv" id="" data-flag-title=""><i class="far fa-eye fa-fw post-meta-icon"></i><span class="post-meta-label">浏览量:</span><span id="busuanzi_value_page_pv"><i class="fa-solid fa-spinner fa-spin"></i></span></span></div></div></div></header><main class="layout" id="content-inner"><div id="post"><article class="container post-content" id="article-container"><h1 id="直接-间接-Syscall-与堆栈欺骗"><a href="#直接-间接-Syscall-与堆栈欺骗" class="headerlink" title="直接 &#x2F; 间接 Syscall 与堆栈欺骗"></a>直接 &#x2F; 间接 Syscall 与堆栈欺骗</h1><p>本文整理对 Direct Syscall、Indirect Syscall，以及 SysWhispers4 式栈顶欺骗的学习与复现：从高层 API 一路下沉到 <code>syscall</code>，再处理返回地址在调用栈上的异常。</p>
+<hr>
+<h2 id="一、从高层-API-到直接-Syscall"><a href="#一、从高层-API-到直接-Syscall" class="headerlink" title="一、从高层 API 到直接 Syscall"></a>一、从高层 API 到直接 Syscall</h2><p>要做的事始终没变：申请内存、写入 shellcode、创建线程执行。变化的是调用链下沉到哪一层。</p>
+<h3 id="1-High-Level：走-kernel32"><a href="#1-High-Level：走-kernel32" class="headerlink" title="1. High Level：走 kernel32"></a>1. High Level：走 kernel32</h3><p>最直接的做法，就是调用高层 API：</p>
+<p><code>VirtualAlloc</code> → <code>memcpy</code> → <code>CreateThread</code> → <code>WaitForSingleObject</code> → <code>CloseHandle</code> → <code>VirtualFree</code></p>
+<p><img src="/images/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/image-20260728170904403.png" alt="image-20260728170904403"></p>
+<p><img src="/images/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/image-20260728172006863.png" alt="image-20260728172006863"></p>
+<h3 id="2-Medium-Level：改走-ntdll"><a href="#2-Medium-Level：改走-ntdll" class="headerlink" title="2. Medium Level：改走 ntdll"></a>2. Medium Level：改走 ntdll</h3><p>下一步不再依赖 kernel32 导出，而是用 <code>GetModuleHandle</code> 拿到 ntdll，再用 <code>GetProcAddress</code> 按名字解析函数地址：</p>
+<p><img src="/images/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/image-20260728172403497.png" alt="image-20260728172403497"></p>
+<p>先声明对应 Nt* 函数签名，把解析到的地址转成可调用函数，再把原先的 kernel32 API 全部换成 ntdll 版本：</p>
+<p><img src="/images/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/image-20260728173202280.png" alt="image-20260728173202280"></p>
+<p><img src="/images/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/image-20260728173700896.png" alt="image-20260728173700896"></p>
+<p><img src="/images/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/image-20260728184600651.png" alt="image-20260728184600651"></p>
+<p><img src="/images/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/image-20260728172144444.png" alt="image-20260728172144444"></p>
+<h3 id="3-Low-Level：自己写-stub，直接-syscall"><a href="#3-Low-Level：自己写-stub，直接-syscall" class="headerlink" title="3. Low Level：自己写 stub，直接 syscall"></a>3. Low Level：自己写 stub，直接 <code>syscall</code></h3><h4 id="获取-SSN"><a href="#获取-SSN" class="headerlink" title="获取 SSN"></a>获取 SSN</h4><p>要从底层发起系统调用，得先拿到每个函数对应的 SSN。以 <code>NtAllocateVirtualMemory</code> 为例，在 IDA 里搜索 ntdll 可以看到 stub 的形态：</p>
+<p><img src="/images/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/image-20260729095403723.png" alt="image-20260729095403723"></p>
+<p><img src="/images/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/image-20260729100022043.png" alt="image-20260729100022043"></p>
+<h4 id="自定义-syscall-汇编"><a href="#自定义-syscall-汇编" class="headerlink" title="自定义 syscall 汇编"></a>自定义 syscall 汇编</h4><p><code>public</code> 是 MASM 关键字，用来把标签暴露给外部；C++ 侧配合 <code>extern &quot;C&quot;</code>，链接器才能找到它。</p>
+<p>普通 x64 调用里，第一个参数在 <code>rcx</code>；而 <code>syscall</code> 要求第一个参数放在 <code>r10</code>。因此 stub 里要先做一次搬运：</p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">mov r10, rcx</span><br></pre></td></tr></table></figure>
+
+<p><img src="/images/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/image-20260728190725014.png" alt="image-20260728190725014"></p>
+<p><img src="/images/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/image-20260728194159657.png" alt="image-20260728194159657"></p>
+<p>接着用自己写好的 syscall 版函数，替换原先走导入表的 API：</p>
+<p><img src="/images/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/image-20260729093257624.png" alt="image-20260729093257624"></p>
+<p><img src="/images/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/image-20260729093348358.png" alt="image-20260729093348358"></p>
+<p>再用 dumpbin 看导入表，相关 Nt* 已不再依赖常规导入：</p>
+<p><img src="/images/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/image-20260729102734754.png" alt="image-20260729102734754"></p>
+<hr>
+<h2 id="二、动态获取-SSN"><a href="#二、动态获取-SSN" class="headerlink" title="二、动态获取 SSN"></a>二、动态获取 SSN</h2><p>SSN 不宜硬编码。不同 Windows 版本上编号会变，更稳妥的做法是运行时从 ntdll 解析。</p>
+<h3 id="1-SysWhispers2：按名字找函数，再读-SSN"><a href="#1-SysWhispers2：按名字找函数，再读-SSN" class="headerlink" title="1. SysWhispers2：按名字找函数，再读 SSN"></a>1. SysWhispers2：按名字找函数，再读 SSN</h3><p>这条路径实现最简单，但也依赖 <code>GetModuleHandleA</code> &#x2F; <code>GetProcAddress</code>。</p>
+<p>以动态获取 <code>NtAllocateVirtualMemory</code> 为例：</p>
+<figure class="highlight c++"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line">HMODULE hNtdll = <span class="built_in">GetModuleHandleA</span>(<span class="string">&quot;ntdll.dll&quot;</span>);</span><br><span class="line">BYTE* addr = (BYTE*)<span class="built_in">GetProcAddress</span>(hNtdll, funcName);</span><br></pre></td></tr></table></figure>
+
+<p><img src="/images/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/image-20260729112546489.png" alt="image-20260729112546489"></p>
+<p>定位到导出函数入口后，<code>addr + 4</code> 处就是 <code>mov eax, SSN</code> 里的立即数：</p>
+<p><img src="/images/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/image-20260729115937475.png" alt="image-20260729115937475"></p>
+<p><img src="/images/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/image-20260729123938710.png" alt="image-20260729123938710"></p>
+<h3 id="2-Hell’s-Gate：绕开-GetProcAddress，扫描-stub-取-SSN"><a href="#2-Hell’s-Gate：绕开-GetProcAddress，扫描-stub-取-SSN" class="headerlink" title="2. Hell’s Gate：绕开 GetProcAddress，扫描 stub 取 SSN"></a>2. Hell’s Gate：绕开 GetProcAddress，扫描 stub 取 SSN</h3><h4 id="（1）找-ntdll-基址"><a href="#（1）找-ntdll-基址" class="headerlink" title="（1）找 ntdll 基址"></a>（1）找 ntdll 基址</h4><p>先从 PEB 入手：</p>
+<figure class="highlight c++"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">PEB_T* peb = (PEB_T*)__readgsqword(<span class="number">0x60</span>);</span><br></pre></td></tr></table></figure>
+
+<p><img src="/images/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/image-20260729145059364.png" alt="image-20260729145059364"></p>
+<p><img src="/images/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/image-20260729145030837.png" alt="image-20260729145030837"></p>
+<p>再经 LDR 找到 <code>InMemoryOrderModuleList</code> 的表头：</p>
+<figure class="highlight c++"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">LIST_ENTRY* head = &amp;peb-&gt;Ldr-&gt;InMemoryOrderModuleList;</span><br></pre></td></tr></table></figure>
+
+<p><img src="/images/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/image-20260729145450959.png" alt="image-20260729145450959"></p>
+<p><img src="/images/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/image-20260729145334774.png" alt="image-20260729145334774"></p>
+<p>链表第二个节点就是 ntdll。Windows 加载器映射模块的大致顺序是：</p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br></pre></td><td class="code"><pre><span class="line">1. EXE 自身</span><br><span class="line">2. ntdll.dll</span><br><span class="line">3. kernel32.dll</span><br><span class="line">4. kernelbase.dll</span><br><span class="line">5. 后续按依赖加载</span><br></pre></td></tr></table></figure>
+
+<p><img src="/images/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/image-20260729151251079.png" alt="image-20260729151251079"></p>
+<p><img src="/images/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/image-20260729150945583.png" alt="image-20260729150945583"></p>
+<p>在该节点中取出 <code>DllBase</code>：</p>
+<p><img src="/images/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/image-20260729152446437.png" alt="image-20260729152446437"></p>
+<h4 id="（2）手动解析导出表"><a href="#（2）手动解析导出表" class="headerlink" title="（2）手动解析导出表"></a>（2）手动解析导出表</h4><p>从可选头取出导出表 RVA，加上基址得到导出表地址；再遍历名称表，匹配目标函数并返回其地址：</p>
+<p><img src="/images/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/image-20260729153800440.png" alt="image-20260729153800440"></p>
+<p><img src="/images/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/image-20260729153119129.png" alt="image-20260729153119129"></p>
+<p><img src="/images/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/image-20260729153733111.png" alt="image-20260729153733111"></p>
+<p><img src="/images/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/image-20260729154555947.png" alt="image-20260729154555947"></p>
+<h4 id="（3）扫描函数体找-SSN"><a href="#（3）扫描函数体找-SSN" class="headerlink" title="（3）扫描函数体找 SSN"></a>（3）扫描函数体找 SSN</h4><p>Hell’s Gate 不从入口按固定偏移读 SSN，就是为了避免入口附近被 hook 后，偏移失效、读到错误数据。</p>
+<p><strong>Phase A：向前遍历，找 <code>syscall</code></strong></p>
+<p><img src="/images/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/image-20260729160129882.png" alt="image-20260729160129882"></p>
+<p><img src="/images/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/image-20260729155807812.png" alt="image-20260729155807812"></p>
+<p><strong>Phase B：从 <code>syscall</code> 往回找 <code>mov eax, imm32</code></strong></p>
+<p><img src="/images/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/image-20260729160912690.png" alt="image-20260729160912690"></p>
+<p><img src="/images/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/image-20260729160401988.png" alt="image-20260729160401988"></p>
+<p><strong>Phase C：验证附近存在 <code>mov r10, rcx</code>（<code>4C 8B D1</code>）</strong></p>
+<p>从 <code>B8</code> 位置继续往回扫：</p>
+<p><img src="/images/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/image-20260729161129750.png" alt="image-20260729161129750"></p>
+<p>三条都匹配，才确认这是合法 stub，并返回 SSN。</p>
+<hr>
+<h2 id="三、Indirect-Syscall"><a href="#三、Indirect-Syscall" class="headerlink" title="三、Indirect Syscall"></a>三、Indirect Syscall</h2><p>直接 syscall 是在自己的 exe 里执行 <code>syscall</code>。正常调用路径会先进入 ntdll stub，再由 ntdll 里的 <code>syscall</code> 进入内核；直接 syscall 则完全绕过了 ntdll。</p>
+<p>以 <code>NtAllocateVirtualMemory</code> 为例，自写 stub 大致是：把第一个参数从 <code>rcx</code> 挪到 <code>r10</code>，把 SSN 填进 <code>eax</code>，然后直接 <code>syscall</code>：</p>
+<p><img src="/images/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/image-20260731105935677.png" alt="image-20260731105935677"></p>
+<p>动态调试可以看到，真正执行 <code>syscall</code> 的地址落在 exe 自己的 <code>.text</code> 段，而不是 ntdll。</p>
+<p><img src="/images/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/image-20260731104902929.png" alt="image-20260731104902929"></p>
+<p><img src="/images/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/image-20260731105015673.png" alt="image-20260731105015673"></p>
+<p>这种调用源异常，很容易被 EDR 的 call stack &#x2F; 返回地址检查盯上。间接 syscall 的思路是：参数和 SSN 仍然自己准备，但最终跳到 ntdll 地址空间里的 <code>syscall</code> 去执行，让进入内核的那条指令看起来来自合法模块。</p>
+<p>因此除了 SSN，还需要拿到 ntdll 里的 <code>syscall</code> 地址。</p>
+<p><img src="/images/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/image-20260731105738776.png" alt="image-20260731105738776"></p>
+<p>实现上，在遍历函数体、解析 SSN 的同时扫描指令字节，找到 <code>0F 05</code>（即 <code>syscall</code>）并记下地址即可：</p>
+<p><img src="/images/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/image-20260731110108522.png" alt="image-20260731110108522"></p>
+<p>完整路径在调试里也很清楚：先从自己的代码跳进 ntdll 的 <code>syscall</code>，再真正陷入内核；返回时同样从 ntdll 回来。</p>
+<p><img src="/images/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/image-20260731110815190.png" alt="image-20260731110815190"></p>
+<p><img src="/images/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/image-20260731110903146.png" alt="image-20260731110903146"></p>
+<p><img src="/images/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/image-20260731110956116.png" alt="image-20260731110956116"></p>
+<hr>
+<h2 id="四、更稳健的-SSN-解析：应对-Hook"><a href="#四、更稳健的-SSN-解析：应对-Hook" class="headerlink" title="四、更稳健的 SSN 解析：应对 Hook"></a>四、更稳健的 SSN 解析：应对 Hook</h2><p>Hell’s Gate 一类做法，是直接从 stub 里读 <code>mov eax, SSN</code>。如果 EDR 把入口 hook 掉了，这段字节就读不到，SSN 解析也会失败。后面几种方法，都是在解决这个问题。</p>
+<h3 id="1-Halo’s-Gate：用邻居推算"><a href="#1-Halo’s-Gate：用邻居推算" class="headerlink" title="1. Halo’s Gate：用邻居推算"></a>1. Halo’s Gate：用邻居推算</h3><p>Windows 给 syscall 编号时有个规律：SSN 与 ntdll 里 stub 的地址顺序基本一致——地址越小，SSN 越小。把 Nt* stub 按地址升序排好后，表里相邻的两项，也是相邻的 syscall 号。某个函数被 hook、读不出 SSN 时，就可以借助邻居的 SSN 和下标差反推出来。</p>
+<p><img src="/images/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/image-20260803143623133.png" alt="image-20260803143623133"></p>
+<p>需要注意的是，导出表遍历顺序本身并不严格按地址升序，个别函数会乱序。因此不能直接拿导出表下标当 SSN，必须自己按地址排一次。</p>
+<p><img src="/images/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/image-20260803145428234.png" alt="image-20260803145428234"></p>
+<h4 id="（1）升序建立-Nt-函数表"><a href="#（1）升序建立-Nt-函数表" class="headerlink" title="（1）升序建立 Nt* 函数表"></a>（1）升序建立 Nt* 函数表</h4><p>每个函数的数据结构里记录 <code>name</code>、<code>addr</code>、<code>ssn</code>、<code>hooked</code>：</p>
+<p><img src="/images/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/image-20260803144914496.png" alt="image-20260803144914496"></p>
+<p>遍历 ntdll 导出表，筛出 Nt 开头的函数：</p>
+<p><img src="/images/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/image-20260803145030747.png" alt="image-20260803145030747"></p>
+<p>再判断入口是否被 hook。常见特征包括：入口是 <code>E9</code> &#x2F; <code>EB</code> &#x2F; <code>FF 25</code> 这类跳转，或者前三个字节不是正常的 <code>mov r10, rcx</code>（<code>4C 8B D1</code>）。</p>
+<p><img src="/images/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/image-20260803160534504.png" alt="image-20260803160534504"></p>
+<p>把能解析到的信息写入函数表：未被 hook 的可以直接从 stub 读出 SSN，被 hook 的先打上标记。最后按地址升序排序。</p>
+<p><img src="/images/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/image-20260803145124640.png" alt="image-20260803145124640"></p>
+<h4 id="（2）对被-hook-的目标找邻居推-SSN"><a href="#（2）对被-hook-的目标找邻居推-SSN" class="headerlink" title="（2）对被 hook 的目标找邻居推 SSN"></a>（2）对被 hook 的目标找邻居推 SSN</h4><p>对被 hook 的目标，向上、向下找最近一个已经有 SSN 的邻居。按地址排序后，数组下标差就等于 SSN 差：</p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line">上面邻居：目标SSN = 邻居SSN + (目标下标 - 邻居下标)</span><br><span class="line">下面邻居：目标SSN = 邻居SSN - (邻居下标 - 目标下标)</span><br></pre></td></tr></table></figure>
+
+<p>两边都找一遍，选距离更近的那个邻居来推算：</p>
+<p><img src="/images/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/image-20260803162443764.png" alt="image-20260803162443764"></p>
+<h3 id="2-Tartarus’-Gate：补上“假正常入口”"><a href="#2-Tartarus’-Gate：补上“假正常入口”" class="headerlink" title="2. Tartarus’ Gate：补上“假正常入口”"></a>2. Tartarus’ Gate：补上“假正常入口”</h3><p>Halo’s Gate 主要看入口有没有被改。但有些 EDR 的 hook 会保留前 3 个字节的 <code>mov r10, rcx</code>，只从第 4 个字节开始改成跳转。入口看起来还像正常 stub，Halo’s Gate 就会误判成“没被 hook”，接着去读已经被改掉的 SSN，结果自然是错的。</p>
+<p>Tartarus’ Gate 在此基础上多判一步：第 4 个字节是不是 <code>E9</code>（相对跳转）。如果是，同样按被 hook 处理，走邻居搜索分支。</p>
+<figure class="highlight c++"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br></pre></td><td class="code"><pre><span class="line"><span class="comment">// Halo&#x27;s Gate 只检查了这里：</span></span><br><span class="line"><span class="keyword">if</span> (stub[<span class="number">0</span>] == <span class="number">0xE9</span>) &#123;</span><br><span class="line">    <span class="keyword">goto</span> neighbor_search;</span><br><span class="line">&#125;</span><br><span class="line"></span><br><span class="line"><span class="comment">// Tartarus&#x27; Gate 额外加一个：</span></span><br><span class="line"><span class="keyword">if</span> (stub[<span class="number">3</span>] == <span class="number">0xE9</span>) &#123;   <span class="comment">// 第 4 字节（0-indexed 是 stub[3]）</span></span><br><span class="line">    <span class="comment">// 前 3 字节看着正常，但第 4 字节被 hook 了</span></span><br><span class="line">    <span class="keyword">goto</span> neighbor_search;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+
+<h3 id="3-FreshyCalls：干脆不读-stub-立即数"><a href="#3-FreshyCalls：干脆不读-stub-立即数" class="headerlink" title="3. FreshyCalls：干脆不读 stub 立即数"></a>3. FreshyCalls：干脆不读 stub 立即数</h3><p>Halo’s Gate &#x2F; Tartarus’ Gate 的思路是“尽量从导出函数里读 SSN，读不到再靠邻居推”。FreshyCalls 换了个更干脆的做法：既然 SSN 和地址顺序一致，那就干脆不读 stub 里的立即数，直接按地址排序后自己编号。</p>
+<p>遍历 ntdll 导出表，用 C++ 的 <code>map</code> 存所有 Nt &#x2F; Zw 开头函数的地址和名字。地址作为键时，<code>map</code> 会自动按地址升序排好：</p>
+<p><img src="/images/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/image-20260804145657718.png" alt="image-20260804145657718"></p>
+<p>排完后从 0 开始依次赋 SSN。这样拿到的编号只依赖 stub 在内存里的布局顺序，不再依赖入口那几个字节有没有被改，也就摆脱了是否被 hook 的影响。</p>
+<p><img src="/images/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/image-20260804150006449.png" alt="image-20260804150006449"></p>
+<p>调试对比可以看到，推出来的 SSN 和 ntdll 原始 stub 里的编号一致。</p>
+<p><img src="/images/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/image-20260804161505041.png" alt="image-20260804161505041"></p>
+<p><img src="/images/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/image-20260804161736547.png" alt="image-20260804161736547"></p>
+<hr>
+<h2 id="五、堆栈欺骗"><a href="#五、堆栈欺骗" class="headerlink" title="五、堆栈欺骗"></a>五、堆栈欺骗</h2><p>这部分对照 <a target="_blank" rel="noopener" href="https://github.com/JoasASantos/SysWhispers4">SysWhispers4</a> 的 <code>--stack-spoof</code> 思路复现：在间接 syscall 之外，再伪造一层返回地址，让栈回溯时看起来更像从合法模块返回。</p>
+<h3 id="1-为什么还要堆栈欺骗"><a href="#1-为什么还要堆栈欺骗" class="headerlink" title="1. 为什么还要堆栈欺骗"></a>1. 为什么还要堆栈欺骗</h3><p>间接 syscall 解决的是：<code>syscall</code> 指令本身来自 ntdll，而不是自己的 <code>.text</code>。</p>
+<p>但 EDR 还会做 <strong>call stack &#x2F; 返回地址检查</strong>。syscall 陷入内核时，如果栈上的返回地址直接指向自己的 exe，仍然会被当成异常调用链。</p>
+<ul>
+<li>间接 syscall：管的是 <strong>谁在执行 <code>syscall</code></strong></li>
+<li>堆栈欺骗：管的是 <strong>syscall 结束后如何返回</strong></li>
+</ul>
+<p>两者需要叠在一起用。</p>
+<h3 id="2-先看正常-API-的调用栈"><a href="#2-先看正常-API-的调用栈" class="headerlink" title="2. 先看正常 API 的调用栈"></a>2. 先看正常 API 的调用栈</h3><p>以 <code>VirtualAllocEx</code> 为例，完整路径大致是：</p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line">exe → kernel32(jmp) → kernelbase → kernelbase → ntdll(syscall)</span><br><span class="line">返回：ntdll → kernelbase → kernelbase → exe</span><br></pre></td></tr></table></figure>
+
+<p>三种路径的对比（正常 &#x2F; 间接 syscall &#x2F; 堆栈欺骗）：</p>
+<p><img src="/images/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/call_flow_compare.png" alt="call_flow_compare"></p>
+<ol>
+<li><code>call qword ptr ds:[&lt;&amp;VirtualAllocEx&gt;]</code></li>
+</ol>
+<p><img src="/images/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/image-20260806094715280.png" alt="image-20260806094715280"></p>
+<p><code>call</code> 先到 kernel32；kernel32 里只有一个 <code>jmp</code>，本身不会再压新的返回地址。</p>
+<p><img src="/images/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/image-20260806095105671.png" alt="image-20260806095105671"></p>
+<p><img src="/images/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/image-20260806130443931.png" alt="image-20260806130443931"></p>
+<p>返回地址压入调用栈：</p>
+<p><img src="/images/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/image-20260806094827968.png" alt="image-20260806094827968"></p>
+<p><code>jmp</code> 进 kernelbase 后，再发起下一个 <code>call</code>。</p>
+<p><img src="/images/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/image-20260806130552771.png" alt="image-20260806130552771"></p>
+<p><img src="/images/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/image-20260806130707113.png" alt="image-20260806130707113"></p>
+<ol start="2">
+<li><code>call &lt;kernelbase.VirtualAllocExNuma&gt;</code></li>
+</ol>
+<p>跳到 kernelbase 另一处，这里再 <code>call</code> 到 ntdll。</p>
+<p><img src="/images/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/image-20260806100008240.png" alt="image-20260806100008240"></p>
+<p><img src="/images/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/image-20260806131154539.png" alt="image-20260806131154539"></p>
+<p>调用栈：</p>
+<p><img src="/images/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/image-20260806095840317.png" alt="image-20260806095840317"></p>
+<ol start="3">
+<li><code>call qword ptr ds:[&lt;NtAllocateVirtualMemory&gt;]</code></li>
+</ol>
+<p>在 ntdll 里发起 syscall。</p>
+<p><img src="/images/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/image-20260806100302326.png" alt="image-20260806100302326"></p>
+<p><img src="/images/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/image-20260806131530996.png" alt="image-20260806131530996"></p>
+<p>调用堆栈：</p>
+<p><img src="/images/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/image-20260806100120704.png" alt="image-20260806100120704"></p>
+<ol start="4">
+<li>syscall 后逐层返回</li>
+</ol>
+<p>第一个是 ntdll 的 <code>ret</code>，回到 kernelbase：</p>
+<p><img src="/images/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/image-20260806100827205.png" alt="image-20260806100827205"></p>
+<p><img src="/images/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/image-20260806101033181.png" alt="image-20260806101033181"></p>
+<p>第二个是 kernelbase 的 <code>ret</code>，回到 kernelbase 另一处：</p>
+<p><img src="/images/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/image-20260806101559213.png" alt="image-20260806101559213"></p>
+<p><img src="/images/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/image-20260806101630567.png" alt="image-20260806101630567"></p>
+<p>第三个再从 kernelbase 回到 exe 里 <code>call</code> 的下一条：</p>
+<p><img src="/images/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/image-20260806101752682.png" alt="image-20260806101752682"></p>
+<p><img src="/images/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/image-20260806101802323.png" alt="image-20260806101802323"></p>
+<h3 id="3-间接-syscall-时，栈顶为什么不对"><a href="#3-间接-syscall-时，栈顶为什么不对" class="headerlink" title="3. 间接 syscall 时，栈顶为什么不对"></a>3. 间接 syscall 时，栈顶为什么不对</h3><p>间接 syscall 在 exe 里 <code>call</code> 自己的 stub，栈上会压入 exe 的返回地址：</p>
+<p><img src="/images/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/image-20260806105838035.png" alt="image-20260806105838035"></p>
+<p><img src="/images/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/image-20260806105822389.png" alt="image-20260806105822389"></p>
+<p>随后用 <code>jmp</code> 跳到 ntdll 的 <code>syscall</code>。<code>jmp</code> 和 <code>call</code> 不同，不会再压返回地址：</p>
+<p><img src="/images/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/image-20260806110239148.png" alt="image-20260806110239148"></p>
+<p>于是内核返回、执行完 stub 里真正的 <code>ret</code> 时，栈顶直接就是 exe：</p>
+<p><img src="/images/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/image-20260806110559711.png" alt="image-20260806110559711"></p>
+<p><img src="/images/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/image-20260806110620467.png" alt="image-20260806110620467"></p>
+<p>对比前面的正常路径：正常时这一层应该是 kernelbase；间接 syscall 不做欺骗时，这一层变成了自己的 exe。这正是堆栈欺骗要修的点。</p>
+<h3 id="4-SysWhispers4-的做法：只伪装栈顶"><a href="#4-SysWhispers4-的做法：只伪装栈顶" class="headerlink" title="4. SysWhispers4 的做法：只伪装栈顶"></a>4. SysWhispers4 的做法：只伪装栈顶</h3><p>SysWhispers4 的 <code>--stack-spoof</code> 核心思路很直接：在发起 syscall 前，把栈上可见的返回地址换成一个指向 ntdll 的合成地址，把真实返回地址藏到更下面一层。文档里把它描述成 synthetic return address，用来对付只看近端调用帧的 stack-walking。</p>
+<p>这里复现的也是这一层，并不是完整复刻 <code>VirtualAllocEx</code> 那条 <code>kernel32 → kernelbase → ntdll</code> 调用链。</p>
+<p>实现上，除了 SSN 和 ntdll 里的 <code>syscall</code> 地址，还要再找一个 ntdll 里的 <code>ret</code> 当跳板。可以扫 ntdll 的 <code>.text</code>，匹配 <code>0F 05 C3</code>（<code>syscall; ret</code>），取出后面的 <code>ret</code> 地址：</p>
+<p><img src="/images/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/image-20260805093518806.png" alt="image-20260805093518806"></p>
+<h4 id="相关栈布局"><a href="#相关栈布局" class="headerlink" title="相关栈布局"></a>相关栈布局</h4><p>x64 调用约定里，调用者要在调用前预留 <code>0x20</code> 影子空间；前 4 个参数走 <code>rcx, rdx, r8, r9</code>，更多参数走栈。另外还要保证 16 字节对齐，所以常见写法是 <code>sub rsp, 28h</code>。</p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br></pre></td><td class="code"><pre><span class="line">sub rsp, 28h</span><br><span class="line">; ...前4个参数放进 rcx, rdx, r8, r9</span><br><span class="line">call function</span><br><span class="line">add rsp, 28h   ; 调用完恢复</span><br></pre></td></tr></table></figure>
+
+<p>三种栈布局对比（普通调用帧 &#x2F; 间接 syscall &#x2F; 欺骗后）：</p>
+<p><img src="/images/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/stack_layout_compare.png" alt="stack_layout_compare"></p>
+<p><code>ret</code> 的行为是：弹出栈顶 8 字节到 <code>RIP</code>，再 <code>RSP += 8</code>。所以内核返回后会先落到伪造的 ntdll <code>ret</code>，再由它弹回 exe。对只看栈顶 &#x2F; 第一层返回地址的检查来说，这一层就从 exe 变成了 ntdll。</p>
+<p>多压 8 字节后，栈参数整体上移。syscall 会从 <code>[rsp+28h]</code> 起读第 5 个及以后的参数，因此要把原来的栈参数再向下复制一格：</p>
+<p><img src="/images/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/stack_spoof_detail.png" alt="stack_spoof_detail"></p>
+<p>以 <code>NtCreateThreadEx</code> 为例，一共 11 个参数，需要把第 5 到第 11 共 7 个参数下移，并在 <code>rsp</code> 填入 ntdll 的 <code>ret</code> 地址。</p>
+<p><img src="/images/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/image-20260805125108686.png" alt="image-20260805125108686"></p>
+<h4 id="调试：伪装后的返回过程"><a href="#调试：伪装后的返回过程" class="headerlink" title="调试：伪装后的返回过程"></a>调试：伪装后的返回过程</h4><p>exe 先 <code>call</code>，压入真实返回地址：</p>
+<p><img src="/images/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/image-20260806111610374.png" alt="image-20260806111610374"></p>
+<p><img src="/images/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/image-20260806111635591.png" alt="image-20260806111635591"></p>
+<p>再压入伪造的 ntdll <code>ret</code>：</p>
+<p><img src="/images/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/image-20260806111934279.png" alt="image-20260806111934279"></p>
+<p><img src="/images/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/image-20260806112111642.png" alt="image-20260806112111642"></p>
+<p>syscall 结束后，返回顺序变成：</p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">ntdll(syscall 后的 ret) → ntdll(伪造的 ret gadget) → exe</span><br></pre></td></tr></table></figure>
+
+<p><img src="/images/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/image-20260806124940022.png" alt="image-20260806124940022"></p>
+<p>这里会出现“ntdll → 另一个 ntdll → exe”，是因为伪造地址选的是裸 <code>ret</code> 跳板，不是真实的 kernelbase 调用帧。它能把栈顶伪装成来自 ntdll，但不会长成前面分析的那条完整 <code>VirtualAllocEx</code> 返回链。</p>
+<h3 id="5-局限"><a href="#5-局限" class="headerlink" title="5. 局限"></a>5. 局限</h3><p>SysWhispers4 文档也写得很清楚：这种 <code>--stack-spoof</code> <strong>只隐藏 immediate caller（栈顶这一层）</strong>。如果 EDR 继续往下走，真实的 exe 帧还在；并且如果伪造地址前面并不是合法的 <code>call</code> 返回点，深度检查仍可能识破。</p>
+<p>文档里提到的更进一步方向包括：</p>
+<ul>
+<li><strong>多层栈伪造（multi-layer spoofing）</strong>：不只改栈顶，而是构造更完整的假调用帧</li>
+<li><strong>选用合法 call site</strong>：伪造地址落在某条 <code>call</code> 指令之后，经得起“返回地址是否对应真实调用点”的校验</li>
+<li><strong>gadget &#x2F; 更完整的 call stack spoofing</strong>：让栈看起来更接近正常的 <code>kernelbase → ntdll</code> 路径</li>
+</ul>
+<p>这些已经超出本次复现范围，可以作为后续继续往下学的方向。</p>
+<hr>
+<h2 id="六、小结"><a href="#六、小结" class="headerlink" title="六、小结"></a>六、小结</h2><table>
+<thead>
+<tr>
+<th>技术</th>
+<th>解决什么问题</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Direct Syscall</td>
+<td>绕过 user-mode hook 的 ntdll &#x2F; kernel32 导出函数</td>
+</tr>
+<tr>
+<td>动态取 SSN（Hell’s Gate 等）</td>
+<td>避免硬编码，适配不同系统版本</td>
+</tr>
+<tr>
+<td>Halo &#x2F; Tartarus &#x2F; FreshyCalls</td>
+<td>在 stub 被 hook 时仍能可靠拿到 SSN</td>
+</tr>
+<tr>
+<td>Indirect Syscall</td>
+<td>让真正执行 <code>syscall</code> 的指令落在 ntdll</td>
+</tr>
+<tr>
+<td>栈顶欺骗（SysWhispers4）</td>
+<td>让近端返回地址看起来来自 ntdll，而不是 exe</td>
+</tr>
+</tbody></table>
+<p>整条线可以概括成：先把调用路径下沉到内核入口附近，再让“谁在执行 <code>syscall</code>”和“返回时栈上长什么样”都尽量像合法模块。</p>
+</article><div class="post-copyright"><div class="post-copyright__author"><span class="post-copyright-meta"><i class="fas fa-circle-user fa-fw"></i>文章作者: </span><span class="post-copyright-info"><a href="https://spherica233.github.io">spherica</a></span></div><div class="post-copyright__type"><span class="post-copyright-meta"><i class="fas fa-square-arrow-up-right fa-fw"></i>文章链接: </span><span class="post-copyright-info"><a href="https://spherica233.github.io/2026/08/10/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/">https://spherica233.github.io/2026/08/10/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/</a></span></div><div class="post-copyright__notice"><span class="post-copyright-meta"><i class="fas fa-circle-exclamation fa-fw"></i>版权声明: </span><span class="post-copyright-info">本博客所有文章除特别声明外，均采用 <a href="https://creativecommons.org/licenses/by-nc-sa/4.0/" target="_blank">CC BY-NC-SA 4.0</a> 许可协议。转载请注明来源 <a href="https://spherica233.github.io" target="_blank">spherica's blog</a>！</span></div></div><div class="tag_share"><div class="post-share"><div class="social-share" data-image="/img/avatar.jpg" data-sites="facebook,x,wechat,weibo,qq"></div><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/butterfly-extsrc@1.1.6/sharejs/dist/css/share.min.css" media="print" onload="this.media='all'"><script src="https://cdn.jsdelivr.net/npm/butterfly-extsrc@1.1.6/sharejs/dist/js/social-share.min.js" defer></script></div></div><nav class="pagination-post" id="pagination"><a class="pagination-related full-width" href="/2026/07/22/%E8%BF%9B%E7%A8%8B%E6%B3%A8%E5%85%A5/" title="进程注入"><div class="cover" style="background: var(--default-bg-color)"></div><div class="info text-right"><div class="info-1"><div class="info-item-1">下一篇</div><div class="info-item-2">进程注入</div></div><div class="info-2"><div class="info-item-1">记录下进程注入的学习总结</div></div></div></a></nav></div><div class="aside-content" id="aside-content"><div class="card-widget card-info text-center"><div class="avatar-img"><img src="/img/avatar.jpg" onerror="this.onerror=null;this.src='/img/friend_404.gif'" alt="avatar"/></div><div class="author-info-name">spherica</div><div class="author-info-description"></div><div class="site-data"><a href="/archives/"><div class="headline">文章</div><div class="length-num">2</div></a><a href="/tags/"><div class="headline">标签</div><div class="length-num">1</div></a><a href="/categories/"><div class="headline">分类</div><div class="length-num">2</div></a></div><a id="card-info-btn" target="_blank" rel="noopener" href="https://github.com/spherica233"><i class="fab fa-github"></i><span>Follow Me</span></a><div class="card-info-social-icons"><a class="social-icon" href="https://github.com/spherica233" target="_blank" title="Github"><i class="fab fa-github" style="color: #24292e;"></i></a><a class="social-icon" href="mailto:spherica_cherry@qq.com" target="_blank" title="Email"><i class="fas fa-envelope" style="color: #4a7dbe;"></i></a></div></div><div class="card-widget card-announcement"><div class="item-headline"><i class="fas fa-bullhorn fa-shake"></i><span>公告</span></div><div class="announcement_content">道阻且长，行则将至；行而不辍，未来可期。</div></div><div class="sticky_layout"><div class="card-widget" id="card-toc"><div class="item-headline"><i class="fas fa-stream"></i><span>目录</span><span class="toc-percentage"></span></div><div class="toc-content"><ol class="toc"><li class="toc-item toc-level-1"><a class="toc-link" href="#%E7%9B%B4%E6%8E%A5-%E9%97%B4%E6%8E%A5-Syscall-%E4%B8%8E%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97"><span class="toc-number">1.</span> <span class="toc-text">直接 &#x2F; 间接 Syscall 与堆栈欺骗</span></a><ol class="toc-child"><li class="toc-item toc-level-2"><a class="toc-link" href="#%E4%B8%80%E3%80%81%E4%BB%8E%E9%AB%98%E5%B1%82-API-%E5%88%B0%E7%9B%B4%E6%8E%A5-Syscall"><span class="toc-number">1.1.</span> <span class="toc-text">一、从高层 API 到直接 Syscall</span></a><ol class="toc-child"><li class="toc-item toc-level-3"><a class="toc-link" href="#1-High-Level%EF%BC%9A%E8%B5%B0-kernel32"><span class="toc-number">1.1.1.</span> <span class="toc-text">1. High Level：走 kernel32</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#2-Medium-Level%EF%BC%9A%E6%94%B9%E8%B5%B0-ntdll"><span class="toc-number">1.1.2.</span> <span class="toc-text">2. Medium Level：改走 ntdll</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#3-Low-Level%EF%BC%9A%E8%87%AA%E5%B7%B1%E5%86%99-stub%EF%BC%8C%E7%9B%B4%E6%8E%A5-syscall"><span class="toc-number">1.1.3.</span> <span class="toc-text">3. Low Level：自己写 stub，直接 syscall</span></a><ol class="toc-child"><li class="toc-item toc-level-4"><a class="toc-link" href="#%E8%8E%B7%E5%8F%96-SSN"><span class="toc-number">1.1.3.1.</span> <span class="toc-text">获取 SSN</span></a></li><li class="toc-item toc-level-4"><a class="toc-link" href="#%E8%87%AA%E5%AE%9A%E4%B9%89-syscall-%E6%B1%87%E7%BC%96"><span class="toc-number">1.1.3.2.</span> <span class="toc-text">自定义 syscall 汇编</span></a></li></ol></li></ol></li><li class="toc-item toc-level-2"><a class="toc-link" href="#%E4%BA%8C%E3%80%81%E5%8A%A8%E6%80%81%E8%8E%B7%E5%8F%96-SSN"><span class="toc-number">1.2.</span> <span class="toc-text">二、动态获取 SSN</span></a><ol class="toc-child"><li class="toc-item toc-level-3"><a class="toc-link" href="#1-SysWhispers2%EF%BC%9A%E6%8C%89%E5%90%8D%E5%AD%97%E6%89%BE%E5%87%BD%E6%95%B0%EF%BC%8C%E5%86%8D%E8%AF%BB-SSN"><span class="toc-number">1.2.1.</span> <span class="toc-text">1. SysWhispers2：按名字找函数，再读 SSN</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#2-Hell%E2%80%99s-Gate%EF%BC%9A%E7%BB%95%E5%BC%80-GetProcAddress%EF%BC%8C%E6%89%AB%E6%8F%8F-stub-%E5%8F%96-SSN"><span class="toc-number">1.2.2.</span> <span class="toc-text">2. Hell’s Gate：绕开 GetProcAddress，扫描 stub 取 SSN</span></a><ol class="toc-child"><li class="toc-item toc-level-4"><a class="toc-link" href="#%EF%BC%881%EF%BC%89%E6%89%BE-ntdll-%E5%9F%BA%E5%9D%80"><span class="toc-number">1.2.2.1.</span> <span class="toc-text">（1）找 ntdll 基址</span></a></li><li class="toc-item toc-level-4"><a class="toc-link" href="#%EF%BC%882%EF%BC%89%E6%89%8B%E5%8A%A8%E8%A7%A3%E6%9E%90%E5%AF%BC%E5%87%BA%E8%A1%A8"><span class="toc-number">1.2.2.2.</span> <span class="toc-text">（2）手动解析导出表</span></a></li><li class="toc-item toc-level-4"><a class="toc-link" href="#%EF%BC%883%EF%BC%89%E6%89%AB%E6%8F%8F%E5%87%BD%E6%95%B0%E4%BD%93%E6%89%BE-SSN"><span class="toc-number">1.2.2.3.</span> <span class="toc-text">（3）扫描函数体找 SSN</span></a></li></ol></li></ol></li><li class="toc-item toc-level-2"><a class="toc-link" href="#%E4%B8%89%E3%80%81Indirect-Syscall"><span class="toc-number">1.3.</span> <span class="toc-text">三、Indirect Syscall</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#%E5%9B%9B%E3%80%81%E6%9B%B4%E7%A8%B3%E5%81%A5%E7%9A%84-SSN-%E8%A7%A3%E6%9E%90%EF%BC%9A%E5%BA%94%E5%AF%B9-Hook"><span class="toc-number">1.4.</span> <span class="toc-text">四、更稳健的 SSN 解析：应对 Hook</span></a><ol class="toc-child"><li class="toc-item toc-level-3"><a class="toc-link" href="#1-Halo%E2%80%99s-Gate%EF%BC%9A%E7%94%A8%E9%82%BB%E5%B1%85%E6%8E%A8%E7%AE%97"><span class="toc-number">1.4.1.</span> <span class="toc-text">1. Halo’s Gate：用邻居推算</span></a><ol class="toc-child"><li class="toc-item toc-level-4"><a class="toc-link" href="#%EF%BC%881%EF%BC%89%E5%8D%87%E5%BA%8F%E5%BB%BA%E7%AB%8B-Nt-%E5%87%BD%E6%95%B0%E8%A1%A8"><span class="toc-number">1.4.1.1.</span> <span class="toc-text">（1）升序建立 Nt* 函数表</span></a></li><li class="toc-item toc-level-4"><a class="toc-link" href="#%EF%BC%882%EF%BC%89%E5%AF%B9%E8%A2%AB-hook-%E7%9A%84%E7%9B%AE%E6%A0%87%E6%89%BE%E9%82%BB%E5%B1%85%E6%8E%A8-SSN"><span class="toc-number">1.4.1.2.</span> <span class="toc-text">（2）对被 hook 的目标找邻居推 SSN</span></a></li></ol></li><li class="toc-item toc-level-3"><a class="toc-link" href="#2-Tartarus%E2%80%99-Gate%EF%BC%9A%E8%A1%A5%E4%B8%8A%E2%80%9C%E5%81%87%E6%AD%A3%E5%B8%B8%E5%85%A5%E5%8F%A3%E2%80%9D"><span class="toc-number">1.4.2.</span> <span class="toc-text">2. Tartarus’ Gate：补上“假正常入口”</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#3-FreshyCalls%EF%BC%9A%E5%B9%B2%E8%84%86%E4%B8%8D%E8%AF%BB-stub-%E7%AB%8B%E5%8D%B3%E6%95%B0"><span class="toc-number">1.4.3.</span> <span class="toc-text">3. FreshyCalls：干脆不读 stub 立即数</span></a></li></ol></li><li class="toc-item toc-level-2"><a class="toc-link" href="#%E4%BA%94%E3%80%81%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97"><span class="toc-number">1.5.</span> <span class="toc-text">五、堆栈欺骗</span></a><ol class="toc-child"><li class="toc-item toc-level-3"><a class="toc-link" href="#1-%E4%B8%BA%E4%BB%80%E4%B9%88%E8%BF%98%E8%A6%81%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97"><span class="toc-number">1.5.1.</span> <span class="toc-text">1. 为什么还要堆栈欺骗</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#2-%E5%85%88%E7%9C%8B%E6%AD%A3%E5%B8%B8-API-%E7%9A%84%E8%B0%83%E7%94%A8%E6%A0%88"><span class="toc-number">1.5.2.</span> <span class="toc-text">2. 先看正常 API 的调用栈</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#3-%E9%97%B4%E6%8E%A5-syscall-%E6%97%B6%EF%BC%8C%E6%A0%88%E9%A1%B6%E4%B8%BA%E4%BB%80%E4%B9%88%E4%B8%8D%E5%AF%B9"><span class="toc-number">1.5.3.</span> <span class="toc-text">3. 间接 syscall 时，栈顶为什么不对</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#4-SysWhispers4-%E7%9A%84%E5%81%9A%E6%B3%95%EF%BC%9A%E5%8F%AA%E4%BC%AA%E8%A3%85%E6%A0%88%E9%A1%B6"><span class="toc-number">1.5.4.</span> <span class="toc-text">4. SysWhispers4 的做法：只伪装栈顶</span></a><ol class="toc-child"><li class="toc-item toc-level-4"><a class="toc-link" href="#%E7%9B%B8%E5%85%B3%E6%A0%88%E5%B8%83%E5%B1%80"><span class="toc-number">1.5.4.1.</span> <span class="toc-text">相关栈布局</span></a></li><li class="toc-item toc-level-4"><a class="toc-link" href="#%E8%B0%83%E8%AF%95%EF%BC%9A%E4%BC%AA%E8%A3%85%E5%90%8E%E7%9A%84%E8%BF%94%E5%9B%9E%E8%BF%87%E7%A8%8B"><span class="toc-number">1.5.4.2.</span> <span class="toc-text">调试：伪装后的返回过程</span></a></li></ol></li><li class="toc-item toc-level-3"><a class="toc-link" href="#5-%E5%B1%80%E9%99%90"><span class="toc-number">1.5.5.</span> <span class="toc-text">5. 局限</span></a></li></ol></li><li class="toc-item toc-level-2"><a class="toc-link" href="#%E5%85%AD%E3%80%81%E5%B0%8F%E7%BB%93"><span class="toc-number">1.6.</span> <span class="toc-text">六、小结</span></a></li></ol></li></ol></div></div><div class="card-widget card-recent-post"><div class="item-headline"><i class="fas fa-history"></i><span>最新文章</span></div><div class="aside-list"><div class="aside-list-item no-cover"><div class="content"><a class="title" href="/2026/08/10/%E7%9B%B4%E6%8E%A5%E4%B8%8E%E9%97%B4%E6%8E%A5Syscall%E5%8F%8A%E5%A0%86%E6%A0%88%E6%AC%BA%E9%AA%97/" title="直接与间接Syscall及堆栈欺骗">直接与间接Syscall及堆栈欺骗</a><time datetime="2026-08-10T07:41:21.000Z" title="发表于 2026-08-10 15:41:21">2026-08-10</time></div></div><div class="aside-list-item no-cover"><div class="content"><a class="title" href="/2026/07/22/%E8%BF%9B%E7%A8%8B%E6%B3%A8%E5%85%A5/" title="进程注入">进程注入</a><time datetime="2026-07-21T16:00:00.000Z" title="发表于 2026-07-22 00:00:00">2026-07-22</time></div></div></div></div></div></div></main><footer id="footer"><div class="footer-other"><div class="footer-copyright"><span class="copyright">&copy;&nbsp;2026 By spherica</span><span class="framework-info"><span>框架 </span><a target="_blank" rel="noopener" href="https://hexo.io">Hexo 8.1.2</a><span class="footer-separator">|</span><span>主题 </span><a target="_blank" rel="noopener" href="https://github.com/jerryc127/hexo-theme-butterfly">Butterfly 5.6.1</a></span></div></div></footer></div><div id="rightside"><div id="rightside-config-hide"><button id="readmode" type="button" title="阅读模式"><i class="fas fa-book-open"></i></button><button id="darkmode" type="button" title="日间和夜间模式切换"><i class="fas fa-adjust"></i></button><button id="hide-aside-btn" type="button" title="单栏和双栏切换"><i class="fas fa-arrows-alt-h"></i></button></div><div id="rightside-config-show"><button id="rightside-config" type="button" title="设置"><i class="fas fa-cog fa-spin"></i></button><button class="close" id="mobile-toc-button" type="button" title="目录"><i class="fas fa-list-ul"></i></button><button id="go-up" type="button" title="回到顶部"><span class="scroll-percent"></span><i class="fas fa-arrow-up"></i></button></div></div><div><script src="/js/utils.js?v=5.6.1"></script><script src="/js/main.js?v=5.6.1"></script><script src="https://cdn.jsdelivr.net/npm/@fancyapps/ui@6.1.14/dist/fancybox/fancybox.umd.min.js"></script><div class="js-pjax"><script>(() => {
+  const parseViewBox = viewBox => {
+    if (!viewBox) return null
+    const parts = viewBox.trim().split(/[\s,]+/).map(n => Number(n))
+    if (parts.length !== 4 || parts.some(n => Number.isNaN(n))) return null
+    return parts
+  }
+
+  const getSvgViewBox = svg => {
+    const attr = parseViewBox(svg.getAttribute('viewBox'))
+    if (attr) return attr
+
+    // Fallback: use bbox to build a viewBox
+    try {
+      const bbox = svg.getBBox()
+      if (bbox && bbox.width && bbox.height) return [bbox.x, bbox.y, bbox.width, bbox.height]
+    } catch (e) {
+      // getBBox may fail on some edge cases; ignore
+    }
+
+    const w = Number(svg.getAttribute('width')) || 0
+    const h = Number(svg.getAttribute('height')) || 0
+    if (w > 0 && h > 0) return [0, 0, w, h]
+    return [0, 0, 100, 100]
+  }
+
+  const setSvgViewBox = (svg, vb) => {
+    svg.setAttribute('viewBox', `${vb[0]} ${vb[1]} ${vb[2]} ${vb[3]}`)
+  }
+
+  const clamp = (v, min, max) => Math.max(min, Math.min(max, v))
+
+  const openSvgInNewTab = ({ source, initViewBox }) => {
+    const getClonedSvg = () => {
+      if (typeof source === 'string') {
+        const template = document.createElement('template')
+        template.innerHTML = source.trim()
+        const svg = template.content.querySelector('svg')
+        return svg ? svg.cloneNode(true) : null
+      }
+      if (source && typeof source.cloneNode === 'function') {
+        return source.cloneNode(true)
+      }
+      return null
+    }
+
+    const clone = getClonedSvg()
+    if (!clone) return
+    if (initViewBox && initViewBox.length === 4) {
+      clone.setAttribute('viewBox', initViewBox.join(' '))
+    }
+    if (!clone.getAttribute('xmlns')) clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg')
+    if (!clone.getAttribute('xmlns:xlink') && clone.innerHTML.includes('xlink:')) {
+      clone.setAttribute('xmlns:xlink', 'http://www.w3.org/1999/xlink')
+    }
+    // inject background to match current theme
+    const isDark = document.documentElement.getAttribute('data-theme') === 'dark'
+    const bg = getComputedStyle(document.body).backgroundColor || (isDark ? '#1e1e1e' : '#ffffff')
+    if (!clone.style.background) clone.style.background = bg
+
+    const serializer = new XMLSerializer()
+    const svgSource = serializer.serializeToString(clone)
+    const htmlSource = `<!doctype html><html><head><meta charset="utf-8" />
+      <style>
+        html, body { width: 100%; height: 100%; margin: 0; display: flex; align-items: center; justify-content: center; background: ${bg}; }
+        svg { max-width: 100%; max-height: 100%; height: auto; width: auto; }
+      </style>
+      </head><body>${svgSource}</body></html>`
+    const blob = new Blob([htmlSource], { type: 'text/html;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    window.open(url, '_blank', 'noopener')
+
+    setTimeout(() => URL.revokeObjectURL(url), 5000)
+  }
+
+  const attachMermaidViewerButton = wrap => {
+    let btn = wrap.querySelector('.mermaid-open-btn')
+    if (!btn) {
+      btn = document.createElement('button')
+      btn.type = 'button'
+      btn.className = 'mermaid-open-btn'
+      wrap.appendChild(btn)
+    }
+
+    btn.innerHTML = '<i class="fa fa-search fa-fw" aria-hidden="true"></i>'
+
+    if (!btn.__mermaidViewerBound) {
+      btn.addEventListener('click', e => {
+        e.preventDefault()
+        e.stopPropagation()
+        const svg = wrap.__mermaidOriginalSvg || wrap.querySelector('svg')
+        if (!svg) return
+        const initViewBox = wrap.__mermaidInitViewBox
+        openSvgInNewTab({ source: svg, initViewBox })
+      })
+      btn.__mermaidViewerBound = true
+    }
+  }
+
+  // Zoom around a point (px, py) in the SVG viewport (in viewBox coordinates)
+  const zoomAtPoint = (vb, factor, px, py) => {
+    const w = vb[2] * factor
+    const h = vb[3] * factor
+    const nx = px - (px - vb[0]) * factor
+    const ny = py - (py - vb[1]) * factor
+    return [nx, ny, w, h]
+  }
+
+  const initMermaidGestures = wrap => {
+    // Clean up previous event listeners and pending frames
+    if (wrap.__mermaidAbortController) {
+      wrap.__mermaidAbortController.abort()
+      if (wrap.__mermaidRafId) cancelAnimationFrame(wrap.__mermaidRafId)
+    }
+    const ac = new AbortController()
+    wrap.__mermaidAbortController = ac
+    const svg = wrap.querySelector('svg')
+    if (!svg) return
+
+    // Ensure viewBox exists so gestures always work
+    const initVb = getSvgViewBox(svg)
+    wrap.__mermaidInitViewBox = initVb
+    wrap.__mermaidCurViewBox = initVb.slice()
+    setSvgViewBox(svg, initVb)
+    // Disable default gestures to prevent scroll chaining and pinch-zoom penetration in Chrome
+    svg.style.touchAction = 'none'
+
+    // Cache BoundingClientRect, throttled on scroll to reduce reflow
+    let cachedRect = svg.getBoundingClientRect()
+    let rectDirty = false
+    const markRectDirty = () => { rectDirty = true }
+    window.addEventListener('resize', markRectDirty, { signal: ac.signal })
+    window.addEventListener('scroll', markRectDirty, { signal: ac.signal, capture: true })
+    const getRect = () => {
+      if (rectDirty) {
+        cachedRect = svg.getBoundingClientRect()
+        rectDirty = false
+      }
+      return cachedRect
+    }
+
+    // Precompute clamp bounds from initial viewBox
+    const minW = initVb[2] * 0.1
+    const maxW = initVb[2] * 10
+    const minH = initVb[3] * 0.1
+    const maxH = initVb[3] * 10
+    const clampVb = vb => {
+      const out = vb.slice()
+      out[2] = clamp(out[2], minW, maxW)
+      out[3] = clamp(out[3], minH, maxH)
+      return out
+    }
+
+    // Throttle DOM updates using requestAnimationFrame
+    let pendingVb = null
+    let rafId = null
+    const applyVb = () => {
+      if (pendingVb) {
+        wrap.__mermaidCurViewBox = pendingVb
+        setSvgViewBox(svg, pendingVb)
+        pendingVb = null
+      }
+      rafId = null
+      wrap.__mermaidRafId = null
+    }
+    const setCurVb = vb => {
+      pendingVb = clampVb(vb)
+      if (!rafId) {
+        rafId = requestAnimationFrame(applyVb)
+        wrap.__mermaidRafId = rafId
+      }
+    }
+
+    const state = {
+      pointers: new Map(),
+      startVb: null,
+      startDist: 0,
+      lastPointerX: 0,
+      lastPointerY: 0
+    }
+
+    const onPointerDown = e => {
+      if (e.pointerType === 'mouse' && e.button !== 0) return
+      svg.setPointerCapture(e.pointerId)
+      const curVb = wrap.__mermaidCurViewBox
+      state.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY })
+      if (state.pointers.size === 1) {
+        state.startVb = curVb.slice()
+        state.lastPointerX = e.clientX
+        state.lastPointerY = e.clientY
+      } else if (state.pointers.size === 2) {
+        const pts = [...state.pointers.values()]
+        const dx = pts[0].x - pts[1].x
+        const dy = pts[0].y - pts[1].y
+        state.startDist = Math.hypot(dx, dy)
+        state.startVb = curVb.slice()
+      }
+    }
+
+    const onPointerMove = e => {
+      if (!state.pointers.has(e.pointerId)) return
+      state.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY })
+      const curVb = wrap.__mermaidCurViewBox
+      const rect = getRect()
+      if (state.pointers.size === 1 && state.startVb) {
+        const p = state.pointers.values().next().value
+        const dxClient = p.x - state.lastPointerX
+        const dyClient = p.y - state.lastPointerY
+        state.lastPointerX = p.x
+        state.lastPointerY = p.y
+        const dx = dxClient * (curVb[2] / rect.width)
+        const dy = dyClient * (curVb[3] / rect.height)
+        setCurVb([curVb[0] - dx, curVb[1] - dy, curVb[2], curVb[3]])
+        return
+      }
+      if (state.pointers.size === 2 && state.startVb && state.startDist > 0) {
+        const pts = [...state.pointers.values()]
+        const dx = pts[0].x - pts[1].x
+        const dy = pts[0].y - pts[1].y
+        const dist = Math.hypot(dx, dy)
+        if (!dist) return
+        const factor = state.startDist / dist
+        const cx = (pts[0].x + pts[1].x) / 2
+        const cy = (pts[0].y + pts[1].y) / 2
+        const px = curVb[0] + (cx - rect.left) * (curVb[2] / rect.width)
+        const py = curVb[1] + (cy - rect.top) * (curVb[3] / rect.height)
+        setCurVb(zoomAtPoint(state.startVb, factor, px, py))
+      }
+    }
+
+    const onPointerUpOrCancel = e => {
+      // Release PointerCapture to avoid event capture anomalies
+      if (svg.hasPointerCapture && svg.hasPointerCapture(e.pointerId)) {
+        svg.releasePointerCapture(e.pointerId)
+      }
+      state.pointers.delete(e.pointerId)
+      if (state.pointers.size === 0) {
+        state.startVb = null
+        state.startDist = 0
+      } else if (state.pointers.size === 1) {
+        const p = state.pointers.values().next().value
+        state.lastPointerX = p.x
+        state.lastPointerY = p.y
+      }
+    }
+
+    const onWheel = e => {
+      // Prevent event bubbling from triggering external scroll
+      e.preventDefault()
+      e.stopPropagation()
+      // Normalize deltaY across deltaMode (Chrome uses pixels, Safari uses lines)
+      let delta = e.deltaY
+      if (e.deltaMode === 1) delta *= 16
+      else if (e.deltaMode === 2) delta *= 400
+
+      // Continuous zoom factor: smoother than fixed 1.1/0.9 steps
+      const zoomFactor = Math.pow(1.001, delta)
+
+      const curVb = wrap.__mermaidCurViewBox
+      const rect = getRect()
+      const px = curVb[0] + (e.clientX - rect.left) * (curVb[2] / rect.width)
+      const py = curVb[1] + (e.clientY - rect.top) * (curVb[3] / rect.height)
+      setCurVb(zoomAtPoint(curVb, zoomFactor, px, py))
+    }
+
+    const onDblClick = () => {
+      const init = wrap.__mermaidInitViewBox
+      if (init) setCurVb(init)
+    }
+
+    svg.addEventListener('pointerdown', onPointerDown, { signal: ac.signal })
+    svg.addEventListener('pointermove', onPointerMove, { signal: ac.signal })
+    svg.addEventListener('pointerup', onPointerUpOrCancel, { signal: ac.signal })
+    svg.addEventListener('pointercancel', onPointerUpOrCancel, { signal: ac.signal })
+    svg.addEventListener('wheel', onWheel, { passive: false, signal: ac.signal })
+    svg.addEventListener('dblclick', onDblClick, { signal: ac.signal })
+  }
+
+  const runMermaid = ele => {
+    window.loadMermaid = true
+    const theme = document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'default'
+    ele.forEach((item, index) => {
+      const mermaidSrc = item.firstElementChild
+      // Clean up event listeners before removing old SVG
+      if (item.__mermaidAbortController) {
+        item.__mermaidAbortController.abort()
+      }
+      const oldSvg = item.querySelector('svg')
+      if (oldSvg) oldSvg.remove()
+      let config = {}
+      try {
+        config = mermaidSrc.dataset.config ? JSON.parse(mermaidSrc.dataset.config) : {}
+      } catch (e) {
+        console.warn('[mermaid] failed to parse dataset.config:', e)
+      }
+      if (!config.theme) {
+        config.theme = theme
+      }
+      const mermaidThemeConfig = `%%{init: ${JSON.stringify(config)}}%%\n`
+      const mermaidID = `mermaid-${index}`
+      const mermaidDefinition = mermaidThemeConfig + mermaidSrc.textContent
+
+      const renderMermaid = svg => {
+        mermaidSrc.insertAdjacentHTML('afterend', svg)
+        if (true) initMermaidGestures(item)
+        item.__mermaidOriginalSvg = svg
+        if (true) attachMermaidViewerButton(item)
+      }
+
+      const handleError = err => {
+        console.error(`[mermaid] render failed for block #${index}:`, err)
+        const errorEl = document.createElement('div')
+        errorEl.className = 'mermaid-error'
+        errorEl.textContent = `Mermaid render error: ${err.message || err}`
+        mermaidSrc.insertAdjacentElement('afterend', errorEl)
+      }
+
+      try {
+        const renderFn = mermaid.render(mermaidID, mermaidDefinition)
+        // mermaid v9 and v10 compatibility
+        if (typeof renderFn === 'string') {
+          renderMermaid(renderFn)
+        } else {
+          renderFn.then(({ svg }) => renderMermaid(svg)).catch(handleError)
+        }
+      } catch (err) {
+        handleError(err)
+      }
+    })
+  }
+
+  const codeToMermaid = $article => {
+    const codeMermaidEle = $article.querySelectorAll('pre > code.mermaid')
+    if (codeMermaidEle.length === 0) return
+
+    codeMermaidEle.forEach(ele => {
+      const preEle = document.createElement('pre')
+      preEle.className = 'mermaid-src'
+      preEle.hidden = true
+      preEle.textContent = ele.textContent
+      const newEle = document.createElement('div')
+      newEle.className = 'mermaid-wrap'
+      newEle.appendChild(preEle)
+      ele.parentNode.replaceWith(newEle)
+    })
+  }
+
+  const loadMermaid = () => {
+    const $article = document.getElementById('article-container')
+    if (!$article) return
+
+    if (true) codeToMermaid($article)
+    const $mermaid = $article.querySelectorAll('.mermaid-wrap')
+    if ($mermaid.length === 0) return
+
+    const runMermaidFn = () => runMermaid($mermaid)
+    btf.addGlobalFn('themeChange', runMermaidFn, 'mermaid')
+    window.loadMermaid ? runMermaidFn() : btf.getScript('https://cdn.jsdelivr.net/npm/mermaid@11.16.0/dist/mermaid.min.js').then(runMermaidFn)
+  }
+
+  btf.addGlobalFn('encrypt', loadMermaid, 'mermaid')
+  window.pjax ? loadMermaid() : document.addEventListener('DOMContentLoaded', loadMermaid)
+})()</script></div><script src="https://cdn.jsdelivr.net/npm/live2d-widget@3.1.4/autoload.js"></script><script defer="defer" id="ribbon" src="https://cdn.jsdelivr.net/npm/butterfly-extsrc@1.1.6/dist/canvas-ribbon.min.js" size="150" alpha="0.6" zIndex="-1" mobile="true" data-click="true"></script><script async data-pjax src="//busuanzi.ibruce.info/busuanzi/2.3/busuanzi.pure.mini.js"></script><div id="local-search"><div class="search-dialog"><nav class="search-nav"><span class="search-dialog-title">搜索</span><i class="fas fa-spinner fa-pulse" id="loading-status" hidden="hidden"></i><button class="search-close-button"><i class="fas fa-times"></i></button></nav><div class="text-center" id="loading-database"><i class="fas fa-spinner fa-pulse"></i><span>  数据加载中</span></div><div class="local-search-input"><input placeholder="搜索文章" type="text"/></div><hr/><div id="local-search-results"></div><div class="ais-Pagination" id="local-search-pagination" style="display:none;"><ul class="ais-Pagination-list"></ul></div><div id="local-search-stats"></div></div><div id="search-mask"></div><script src="/js/search/local-search.js?v=5.6.1"></script></div></div></body></html>
